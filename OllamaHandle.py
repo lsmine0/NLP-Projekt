@@ -6,7 +6,7 @@ import Logger
 
 
 class OllamaHandler:
-  def __init__(self, apiendpoint, key):
+  def __init__(self, apiendpoint="localhost:11434", key="ollam"):
     self.client = OpenAI(
     base_url = apiendpoint,
     api_key= key
