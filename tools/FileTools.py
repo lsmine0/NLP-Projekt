@@ -1,6 +1,9 @@
 from functools import wraps
 from pathlib import Path
 from ToolHandle import ToolHandle
+from datetime import date, datetime, time, timezone
+from fnmatch import fnmatchcase
+from stat import S_ISDIR, S_ISREG
 import shutil
 
 # Wrapper zwracający słownik z kluczem "success" i ewentualnym komunikatem o błędzie.
@@ -190,6 +193,129 @@ def search_in_files(path: str, text: str, case_sensitive: bool = False):
         "skipped_files": skipped_files,
     }
 
+def _get_path_info(path: Path):
+    # Wspólna funkcja pomocnicza do odczytu metadanych.
+    file_stat = path.stat()
+
+    is_file = S_ISREG(file_stat.st_mode)
+    is_directory = S_ISDIR(file_stat.st_mode)
+
+    return {
+        "path": str(path.absolute()),
+        "name": path.name,
+        "extension": path.suffix.lower() if is_file else "",
+        "size_bytes": file_stat.st_size if is_file else None,
+        "modified_at": datetime.fromtimestamp(
+            file_stat.st_mtime,
+            tz=timezone.utc,
+        ).isoformat(),
+        "is_file": is_file,
+        "is_directory": is_directory,
+    }
+
+@_handle_errors
+def get_file_info(path: str):
+    return {
+        "success": True,
+        **_get_path_info(Path(path)),
+    }
+
+@_handle_errors
+def find_files(
+    path: str,
+    name_pattern: str = "*",
+    extensions= None,
+    modified_before: str | None = None,
+    recursive: bool = True,
+):
+    directory_path = Path(path)
+
+    # stat() zgłosi błąd, jeśli ścieżka nie istnieje
+    # albo nie można odczytać jej metadanych.
+    directory_stat = directory_path.stat()
+
+    if not S_ISDIR(directory_stat.st_mode):
+        return {
+            "success": False,
+            "error": f"Search path is not a directory: {directory_path}",
+        }
+
+    cutoff = None
+
+    if modified_before is not None:
+        try:
+            cutoff_date = date.fromisoformat(modified_before)
+        except ValueError:
+            return {
+                "success": False,
+                "error": "modified_before must be a valid date in YYYY-MM-DD format.",
+            }
+
+        # Szukamy plików zmodyfikowanych przed początkiem tego dnia w UTC.
+        cutoff = datetime.combine(
+            cutoff_date,
+            time.min,
+            tzinfo=timezone.utc,
+        )
+
+    normalized_extensions = None
+
+    if extensions is not None:
+        normalized_extensions = {
+            extension.lower()
+            if extension.startswith(".")
+            else f".{extension.lower()}"
+            for extension in extensions
+        }
+
+    entries = (
+        directory_path.rglob("*")
+        if recursive
+        else directory_path.iterdir()
+    )
+
+    files = []
+    skipped_files = []
+
+    for entry in entries:
+        # Dopasowanie nazwy bez rozróżniania wielkości liter.
+        if not fnmatchcase(entry.name.casefold(), name_pattern.casefold()):
+            continue
+
+        if (
+            normalized_extensions is not None
+            and entry.suffix.lower() not in normalized_extensions
+        ):
+            continue
+
+        try:
+            info = _get_path_info(entry)
+        except OSError as error:
+            skipped_files.append({
+                "path": str(entry.absolute()),
+                "error": f"Cannot read path metadata: {error}",
+            })
+            continue
+
+        if not info["is_file"]:
+            continue
+
+        modified_at = datetime.fromisoformat(info["modified_at"])
+
+        if cutoff is not None and modified_at >= cutoff:
+            continue
+
+        files.append(info)
+
+    files.sort(key=lambda info: info["path"])
+
+    return {
+        "success": True,
+        "files_count": len(files),
+        "files": files,
+        "skipped_files": skipped_files,
+    }
+
 # Rejestracja narzędzi w ToolHandle
 def register_tools(tool_handle):
     path_property = {
@@ -291,6 +417,68 @@ def register_tools(tool_handle):
             },
             "required": ["path", "text"],
         },
+        {
+            "name": "get_file_info",
+            "description": (
+                "Returns metadata for a file or directory: absolute path, name, "
+                "extension, file size in bytes, last modification time in UTC, "
+                "and whether the path is a file or directory. "
+                "Directory size is returned as null."
+            ),
+            "properties": {
+                "path": path_property,
+            },
+            "required": ["path"],
+        },
+        {
+            "name": "find_files",
+            "description": (
+                "Finds files in a directory using optional filename, extension, "
+                "and last modification date filters. All filters must match. "
+                "Returns absolute file paths and metadata. "
+                "Does not search file contents. "
+                "Searches subdirectories by default."
+            ),
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the directory to search.",
+                },
+                "name_pattern": {
+                    "type": "string",
+                    "description": (
+                        "Case-insensitive filename pattern, such as report*.pdf. "
+                        "Supports * for any sequence of characters and ? for one "
+                        "character. Defaults to *."
+                    ),
+                },
+                "extensions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                    },
+                    "description": (
+                        "Allowed extensions, such as ['.pdf', '.txt']. "
+                        "Matching is case-insensitive. The leading dot is optional. "
+                        "If omitted, all extensions are allowed."
+                    ),
+                },
+                "modified_before": {
+                    "type": "string",
+                    "description": (
+                        "Select files last modified strictly before midnight UTC "
+                        "at the start of this date. Format: YYYY-MM-DD."
+                    ),
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether to search subdirectories. Defaults to true."
+                    ),
+                },
+            },
+            "required": ["path"],
+        },       
     ]
 
     for definition in definitions:
