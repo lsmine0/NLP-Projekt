@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Czat testowy</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            display: flex;
+            height: 100vh;
+            margin: 0;
+            color: #303846;
+            background: #f5f6f8;
+            font: 14px/1.5 system-ui, sans-serif;
+        }
+        button, textarea { font: inherit; }
+        button { cursor: pointer; }
+        aside {
+            display: flex;
+            width: 260px;
+            flex: 0 0 260px;
+            flex-direction: column;
+            padding: 22px 14px;
+            background: #fff;
+            border-right: 1px solid #e6e8ed;
+        }
+        .brand { margin: 0 9px 22px; font-size: 17px; font-weight: 650; }
+        .new-chat, .nav-button, .history button {
+            width: 100%;
+            padding: 10px 11px;
+            color: #586273;
+            text-align: left;
+            background: transparent;
+            border: 0;
+            border-radius: 8px;
+        }
+        .new-chat {
+            margin-bottom: 18px;
+            color: #425b7b;
+            background: #eef2f7;
+            text-align: center;
+        }
+        .nav-button.active, .nav-button:hover, .history button:hover { background: #f2f4f7; }
+        .nav-button.active { color: #354d6d; }
+        .group-title {
+            margin: 20px 9px 7px;
+            color: #9299a5;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+        }
+        .history button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .history button.active { background: #e9eef5; color: #354d6d; }
+        #history-section[hidden] { display: none; }
+        .sidebar-note { margin: auto 9px 0; color: #9299a5; font-size: 12px; }
+        main { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+        header {
+            display: flex;
+            min-height: 66px;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 28px;
+            background: #fff;
+            border-bottom: 1px solid #e6e8ed;
+        }
+        header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+        .connection { color: #8a929e; font-size: 12px; }
+        #messages {
+            display: flex;
+            width: min(760px, 100%);
+            flex: 1;
+            flex-direction: column;
+            gap: 20px;
+            align-self: center;
+            overflow-y: auto;
+            padding: 30px 22px;
+        }
+        .message { max-width: 82%; }
+        .message.user { align-self: flex-end; }
+        .sender { margin: 0 0 5px; color: #8a929e; font-size: 11px; }
+        .bubble {
+            padding: 11px 14px;
+            background: #fff;
+            border: 1px solid #e6e8ed;
+            border-radius: 4px 13px 13px;
+            overflow-wrap: anywhere;
+            white-space: pre-wrap;
+        }
+        .user .bubble { background: #e9eef5; border-color: #e9eef5; border-radius: 13px 4px 13px 13px; }
+        #composer {
+            display: flex;
+            width: min(800px, calc(100% - 40px));
+            align-items: flex-end;
+            gap: 8px;
+            align-self: center;
+            margin: 0 20px 22px;
+            padding: 9px;
+            background: #fff;
+            border: 1px solid #dfe3e9;
+            border-radius: 12px;
+        }
+        #prompt {
+            min-height: 42px;
+            max-height: 140px;
+            flex: 1;
+            resize: vertical;
+            padding: 10px;
+            border: 0;
+            outline: 0;
+        }
+        #send, #microphone {
+            width: 40px;
+            height: 40px;
+            border: 0;
+            border-radius: 8px;
+        }
+        #send { color: #fff; background: #647b9c; }
+        #send:hover { background: #526987; }
+        #microphone { color: #657184; background: #f1f3f6; }
+        #microphone:hover { background: #e8ebf0; }
+        #microphone.listening {
+            color: #fff;
+            background: #be7777;
+            animation: pulse 1.2s ease-in-out infinite;
+        }
+        #mic-status { min-height: 18px; margin: 0 0 8px; color: #9a7777; text-align: center; font-size: 12px; }
+        @keyframes pulse {
+            50% { box-shadow: 0 0 0 5px #be77772c; }
+        }
+        #settings {
+            display: none;
+            width: min(700px, calc(100% - 40px));
+            align-self: center;
+            margin: 28px auto;
+            padding: 22px;
+            background: #fff;
+            border: 1px solid #e6e8ed;
+            border-radius: 10px;
+        }
+        #settings h2 { margin: 0 0 8px; font-size: 17px; }
+        #settings p { color: #7d8694; }
+        @media (max-width: 650px) {
+            aside { width: 190px; flex-basis: 190px; padding: 18px 9px; }
+            header { padding: 0 16px; }
+            #messages { padding: 22px 14px; }
+            .message { max-width: 94%; }
+        }
+        @media (max-width: 480px) {
+            aside { width: 150px; flex-basis: 150px; }
+            .brand { font-size: 15px; }
+            .history button, .nav-button { padding: 9px 7px; font-size: 12px; }
+            .connection { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <aside>
+        <p class="brand">Czat testowy</p>
+        <button class="new-chat" id="new-chat">＋ Nowy czat</button>
+        <nav aria-label="Nawigacja">
+            <button class="nav-button active" id="chat-nav">◷ &nbsp; Rozmowa</button>
+            <button class="nav-button" id="settings-nav">⚙ &nbsp; Ustawienia</button>
+        </nav>
+        <section id="history-section">
+            <p class="group-title">Historia czatów</p>
+            <div class="history" id="chat-history"></div>
+        </section>
+        <p class="sidebar-note">Wersja demonstracyjna</p>
+    </aside>
+
+    <main>
+        <header>
+            <h1 id="chat-title">Nowa rozmowa</h1>
+            <span class="connection">Agent demonstracyjny</span>
+        </header>
+
+        <section id="messages" aria-live="polite"></section>
+        <section id="settings">
+            <h2>Ustawienia</h2>
+            <p>Ustawienia wyglądu i zachowania interfejsu.</p>
+            <label>
+                <input id="show-history" type="checkbox">
+                Pokazuj historię czatów
+            </label>
+            <p id="settings-status" role="status"></p>
+        </section>
+
+        <form id="composer">
+            <textarea id="prompt" rows="1" placeholder="Napisz wiadomość..." aria-label="Wiadomość"></textarea>
+            <button id="microphone" type="button" aria-label="Włącz mikrofon (mockup)" aria-pressed="false">●</button>
+            <button id="send" type="submit" aria-label="Wyślij wiadomość">↑</button>
+        </form>
+        <p id="mic-status" aria-live="polite"></p>
+    </main>
+
+    <script>
+        const messages = document.getElementById("messages");
+        const promptInput = document.getElementById("prompt");
+        const showHistory = document.getElementById("show-history");
+        const historySection = document.getElementById("history-section");
+        const welcomeMessage = "Cześć! To demonstracyjny interfejs czatu. Napisz wiadomość, aby sprawdzić działanie.";
+        let chats = [
+            {
+                id: 1,
+                title: "Test narzędzi",
+                messages: [
+                    { sender: "agent", text: "Cześć! Możesz tu testować przykładowe polecenia." },
+                    { sender: "user", text: "Czy interfejs odpowiada?" },
+                    { sender: "agent", text: "Tak, to przykładowa rozmowa z historii." }
+                ]
+            },
+            {
+                id: 2,
+                title: "Pomysły na projekt",
+                messages: [
+                    { sender: "user", text: "Podaj pomysł na mały projekt." },
+                    { sender: "agent", text: "Możesz stworzyć prostą listę zadań z filtrowaniem." }
+                ]
+            },
+            {
+                id: 3,
+                title: "Przykładowa rozmowa",
+                messages: [
+                    { sender: "agent", text: "Witaj! To kolejny statyczny wpis historii." },
+                    { sender: "user", text: "Dobrze wiedzieć." }
+                ]
+            }
+        ];
+        let activeChatId = 1;
+        let nextChatId = 4;
+        const replies = [
+            "To przykładowa odpowiedź agenta. Interfejs działa poprawnie.",
+            "Dziękuję za wiadomość! To odpowiedź z makiety, bez połączenia z agentem.",
+            "Odebrano. Tutaj pojawiłaby się odpowiedź właściwego agenta."
+        ];
+
+        function renderMessage(text, sender) {
+            const message = document.createElement("article");
+            message.className = `message ${sender}`;
+            const label = document.createElement("p");
+            label.className = "sender";
+            label.textContent = sender === "user" ? "Ty" : "Asystent";
+            const bubble = document.createElement("div");
+            bubble.className = "bubble";
+            bubble.textContent = text;
+            message.append(label, bubble);
+            messages.append(message);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function renderHistory() {
+            const history = document.getElementById("chat-history");
+            history.replaceChildren();
+            chats.slice().reverse().forEach((chat) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = chat.title;
+                button.classList.toggle("active", chat.id === activeChatId);
+                button.setAttribute("aria-current", chat.id === activeChatId ? "true" : "false");
+                button.addEventListener("click", () => openChat(chat.id));
+                history.append(button);
+            });
+        }
+
+        function renderChat() {
+            const chat = chats.find((item) => item.id === activeChatId);
+            if (!chat) return;
+            document.getElementById("chat-title").textContent = chat.title;
+            messages.replaceChildren();
+            chat.messages.forEach(({ text, sender }) => renderMessage(text, sender));
+            renderHistory();
+        }
+
+        function openChat(id) {
+            activeChatId = id;
+            renderChat();
+            chatNav.click();
+        }
+
+        function addMessage(text, sender, chatId = activeChatId) {
+            const chat = chats.find((item) => item.id === chatId);
+            if (!chat) return;
+            chat.messages.push({ text, sender });
+            if (chatId === activeChatId) renderMessage(text, sender);
+            if (sender === "user" && chat.title.startsWith("Nowy czat")) {
+                chat.title = text.slice(0, 28) || chat.title;
+                renderHistory();
+                document.getElementById("chat-title").textContent = chat.title;
+            }
+        }
+
+        document.getElementById("composer").addEventListener("submit", (event) => {
+            event.preventDefault();
+            const text = promptInput.value.trim();
+            if (!text) return;
+            const chatId = activeChatId;
+            addMessage(text, "user", chatId);
+            promptInput.value = "";
+            window.setTimeout(() => {
+                addMessage(replies[Math.floor(Math.random() * replies.length)], "agent", chatId);
+            }, 500);
+        });
+
+        promptInput.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                document.getElementById("composer").requestSubmit();
+            }
+        });
+
+        document.getElementById("microphone").addEventListener("click", (event) => {
+            const button = event.currentTarget;
+            const active = button.classList.toggle("listening");
+            button.setAttribute("aria-pressed", String(active));
+            document.getElementById("mic-status").textContent = active
+                ? "Nasłuchiwanie (makieta)"
+                : "";
+        });
+
+        const chatNav = document.getElementById("chat-nav");
+        const settingsNav = document.getElementById("settings-nav");
+        const composer = document.getElementById("composer");
+
+        function activateView(view, title) {
+            messages.style.display = view === "chat" ? "flex" : "none";
+            composer.style.display = view === "chat" ? "flex" : "none";
+            document.getElementById("mic-status").style.visibility = view === "chat" ? "visible" : "hidden";
+            document.getElementById("settings").style.display = view === "settings" ? "block" : "none";
+            [chatNav, settingsNav].forEach((button) => {
+                button.classList.toggle("active", button === { chat: chatNav, settings: settingsNav }[view]);
+            });
+            if (view !== "chat") document.getElementById("chat-title").textContent = title;
+            else {
+                const chat = chats.find((item) => item.id === activeChatId);
+                document.getElementById("chat-title").textContent = chat ? chat.title : "Nowa rozmowa";
+            }
+        }
+
+        chatNav.addEventListener("click", () => {
+            activateView("chat", "");
+        });
+        settingsNav.addEventListener("click", () => {
+            activateView("settings", "Ustawienia");
+        });
+        document.getElementById("new-chat").addEventListener("click", () => {
+            const chat = {
+                id: nextChatId++,
+                title: `Nowy czat ${nextChatId - 1}`,
+                messages: [{ text: welcomeMessage, sender: "agent" }]
+            };
+            chats.push(chat);
+            activeChatId = chat.id;
+            renderChat();
+            document.getElementById("microphone").classList.remove("listening");
+            document.getElementById("microphone").setAttribute("aria-pressed", "false");
+            document.getElementById("mic-status").textContent = "";
+            chatNav.click();
+        });
+
+        showHistory.checked = localStorage.getItem("showChatHistory") !== "false";
+        historySection.hidden = !showHistory.checked;
+        showHistory.addEventListener("change", () => {
+            historySection.hidden = !showHistory.checked;
+            localStorage.setItem("showChatHistory", String(showHistory.checked));
+            document.getElementById("settings-status").textContent = showHistory.checked
+                ? "Historia czatów jest widoczna."
+                : "Historia czatów jest ukryta.";
+        });
+
+        renderChat();
+    </script>
+</body>
+</html>
