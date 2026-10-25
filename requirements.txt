@@ -1,0 +1,9 @@
+faster-whisper
+piper-tts
+kokoro
+chatterbox-tts
+coqui-tts
+soundfile
+numpy
+torch
+torchaudio
