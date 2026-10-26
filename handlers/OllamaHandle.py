@@ -1,8 +1,8 @@
 from openai import OpenAI 
-import ContextHandle as Contx
-import ToolHandle as Thandle
+from handlers import ContextHandle as Contx
+from handlers import ToolHandle as Thandle
 import requests
-import Logger
+from core import Logger
 
 
 class OllamaHandler:
@@ -39,7 +39,7 @@ class OllamaHandler:
         response.raise_for_status()
         Logger.printInfo(f"Model {self.model} Getinfo.")
         return response.json()
-      else
+      else:
         Logger.printError(f"Get info on Invalid model.")
         return {}
 
