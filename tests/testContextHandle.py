@@ -1,4 +1,4 @@
-from ContextHandle import ContextHandle
+from  handlers.ContextHandle import ContextHandle
 
 history = [ContextHandle.Create("Jesteś wystrzałowym kotem")]
 print(ContextHandle.Read(history, ["system"]))
