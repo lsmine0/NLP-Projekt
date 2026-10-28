@@ -95,6 +95,7 @@
         button { cursor: pointer; }
         i.ph, i.ph-fill { font-size: 18px; line-height: 1; vertical-align: middle; font-style: normal; }
         html.icons-offline .ph-robot::before { content: "🤖"; }
+        html.icons-offline .ph-user::before { content: "👤"; }
         html.icons-offline .ph-plus::before { content: "＋"; }
         html.icons-offline .ph-chats-circle::before { content: "💬"; }
         html.icons-offline .ph-gear::before { content: "⚙"; }
@@ -244,9 +245,42 @@
             text-align: center;
         }
         .empty i { font-size: 36px; color: var(--accent); opacity: 0.7; }
-        .message { max-width: 82%; }
-        .message.user { align-self: flex-end; }
+        .message {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            max-width: 85%;
+        }
+        .message.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+        .avatar {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            flex: 0 0 32px;
+            margin-top: 19px;
+            border-radius: 10px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            color: var(--accent);
+            box-shadow: var(--shadow-sm);
+        }
+        .message.user .avatar {
+            background: var(--bg-user-bubble);
+            border-color: var(--bg-user-bubble);
+            color: var(--text-user-bubble);
+        }
+        .msg-body {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
         .sender { margin: 0 0 5px; color: var(--text-muted); font-size: 11px; }
+        .message.user .sender { text-align: right; }
         .bubble {
             display: flex;
             flex-direction: column;
@@ -952,6 +986,16 @@
 
             const message = document.createElement("article");
             message.className = `message ${sender}`;
+
+            const avatar = document.createElement("div");
+            avatar.className = "avatar";
+            avatar.innerHTML = sender === "user"
+                ? '<i class="ph-fill ph-user"></i>'
+                : '<i class="ph-fill ph-robot"></i>';
+
+            const body = document.createElement("div");
+            body.className = "msg-body";
+
             const label = document.createElement("p");
             label.className = "sender";
             label.textContent = sender === "user" ? "Ty" : "Jarvis";
@@ -970,7 +1014,8 @@
                 bubble.textContent = text;
             }
 
-            message.append(label, bubble);
+            body.append(label, bubble);
+            message.append(avatar, body);
             messages.append(message);
             if (parsed?.stopped) renderStoppedDivider();
             messages.scrollTop = messages.scrollHeight;
@@ -1228,7 +1273,7 @@
                     const finalParsed = splitThinkTags(rawReply);
                     if (aborted) {
                         if (!finalParsed.answer && !finalParsed.thinking && !streamThinking) {
-                            bubble.parentElement?.remove();
+                            bubble.closest(".message")?.remove();
                         }
                         renderStoppedDivider();
                     } else if (!finalParsed.answer && !streamThinking && !failed) {
