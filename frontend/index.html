@@ -600,6 +600,51 @@
         .primary { color: #fff; background: var(--accent); margin-top: 14px; }
         .primary:hover { background: var(--accent-hover); }
 
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.55);
+            z-index: 100;
+            padding: 16px;
+        }
+        .modal-backdrop.open { display: flex; }
+        .modal-box {
+            width: min(400px, 100%);
+            padding: 20px 22px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+        }
+        .modal-box h3 { margin: 0 0 8px; font-size: 15px; color: var(--text-primary); }
+        .modal-box p { margin: 0 0 16px; font-size: 13.5px; color: var(--text-secondary); line-height: 1.45; }
+        .modal-warning {
+            display: none;
+            margin: 0 0 16px;
+            padding: 9px 11px;
+            background: var(--danger-soft);
+            border: 1px solid var(--danger);
+            border-radius: 8px;
+            color: var(--danger);
+            font-size: 12.5px;
+            line-height: 1.4;
+        }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+        .btn-cancel, .btn-danger {
+            padding: 7px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            border: 1px solid var(--border-color);
+        }
+        .btn-cancel { background: var(--bg-subtle); color: var(--text-primary); }
+        .btn-cancel:hover { background: var(--bg-hover); }
+        .btn-danger { background: var(--danger); color: #fff; border-color: transparent; }
+        .btn-danger:hover { opacity: 0.9; }
+
         @media (max-width: 650px) {
             aside { width: 190px; flex-basis: 190px; padding: 18px 9px; }
             header { padding: 0 16px; }
@@ -724,6 +769,18 @@
         </div>
     </main>
 
+    <div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div class="modal-box">
+            <h3 id="confirm-title">Usunąć czat?</h3>
+            <p id="confirm-desc"></p>
+            <div class="modal-warning" id="confirm-warning"></div>
+            <div class="modal-actions">
+                <button class="btn-cancel" id="confirm-cancel" type="button">Anuluj</button>
+                <button class="btn-danger" id="confirm-ok" type="button">Usuń czat</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const $ = (id) => document.getElementById(id);
         const messages = $("messages");
@@ -748,6 +805,18 @@
         let streaming = false;
         let controller = null;
         let recording = false;
+        let autoScroll = true;
+
+        messages.addEventListener("scroll", () => {
+            const distanceFromBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+            autoScroll = distanceFromBottom < 45;
+        });
+
+        function scrollToBottom(force = false) {
+            if (force || autoScroll) {
+                messages.scrollTop = messages.scrollHeight;
+            }
+        }
 
         // Dopasowanie wysokości pola tekstowego i zwijanie do 1 linii po wyczyszczeniu
         function autoResizePrompt() {
@@ -979,8 +1048,8 @@
             }
         }
 
-        function newChat() {
-            if (streaming) return;
+        function newChat(force = false) {
+            if (streaming && !force) return;
             activeChatId = null;
             renderEmpty();
             setTitle(NEW_CHAT_TITLE);
@@ -989,12 +1058,53 @@
             chatNav.click();
         }
 
+        function askDeleteConfirm(chat) {
+            return new Promise((resolve) => {
+                const modal = $("confirm-modal");
+                const warning = $("confirm-warning");
+                const isCurrent = chat.id === activeChatId;
+                $("confirm-desc").textContent = `Czy na pewno chcesz bezpowrotnie usunąć rozmowę „${chat.title}”?`;
+
+                if (isCurrent && streaming) {
+                    warning.style.display = "block";
+                    warning.textContent = "⚠ Ten czat jest aktualnie otwarty i trwa w nim generowanie odpowiedzi. Usunięcie go natychmiast przerwie generowanie.";
+                } else if (isCurrent) {
+                    warning.style.display = "block";
+                    warning.textContent = "⚠ Ten czat jest aktualnie otwarty – po usunięciu zostaniesz przeniesiony do nowej rozmowy.";
+                } else {
+                    warning.style.display = "none";
+                }
+
+                const close = (result) => {
+                    modal.classList.remove("open");
+                    $("confirm-ok").onclick = null;
+                    $("confirm-cancel").onclick = null;
+                    modal.onclick = null;
+                    resolve(result);
+                };
+
+                $("confirm-ok").onclick = () => close(true);
+                $("confirm-cancel").onclick = () => close(false);
+                modal.onclick = (e) => { if (e.target === modal) close(false); };
+                modal.classList.add("open");
+            });
+        }
+
         async function removeChat(id) {
-            if (streaming) return;
+            const chat = chats.find((c) => c.id === id) || { id, title: NEW_CHAT_TITLE };
+            const confirmed = await askDeleteConfirm(chat);
+            if (!confirmed) return;
+
+            const isCurrent = id === activeChatId;
+            if (isCurrent && streaming) {
+                activeChatId = null;
+                controller?.abort();
+                stopVoice();
+            }
             try {
                 await api(`/api/chats/${id}`, { method: "DELETE" });
             } catch (error) {}
-            if (id === activeChatId) newChat();
+            if (isCurrent) newChat(true);
             await refreshChats();
         }
 
@@ -1011,12 +1121,14 @@
 
         async function sendMessage(text) {
             stopVoice();
+            autoScroll = true;
             renderMessage(text, "user");
             const bubble = renderMessage("", "agent");
             const dots = createDotsElement();
             const answerEl = document.createElement("div");
             answerEl.className = "answer-content";
             bubble.replaceChildren(dots, answerEl);
+            scrollToBottom(true);
 
             setStreaming(true);
             controller = new AbortController();
@@ -1037,7 +1149,11 @@
                         thinkingBox = createThinkingElement(fullThinking, isThinkingNow);
                         bubble.insertBefore(thinkingBox, answerEl);
                     } else {
-                        thinkingBox.querySelector(".thinking-content").innerHTML = renderMarkdown(fullThinking);
+                        const tc = thinkingBox.querySelector(".thinking-content");
+                        const tcAtBottom = tc.scrollHeight - tc.scrollTop - tc.clientHeight < 30;
+                        const prevScrollTop = tc.scrollTop;
+                        tc.innerHTML = renderMarkdown(fullThinking);
+                        tc.scrollTop = tcAtBottom ? tc.scrollHeight : prevScrollTop;
                         thinkingBox.classList.toggle("active", isThinkingNow);
                         thinkingBox.querySelector(".thinking-label").textContent = isThinkingNow
                             ? "Jarvis myśli"
@@ -1049,7 +1165,7 @@
                     dots.remove();
                     answerEl.innerHTML = renderMarkdown(parsed.answer);
                 }
-                messages.scrollTop = messages.scrollHeight;
+                scrollToBottom(false);
             };
 
             const showError = (messageText) => {
@@ -1079,6 +1195,7 @@
                 const handle = (event) => {
                     if (event.type === "chat_id") {
                         activeChatId = event.id;
+                        refreshChats();
                     } else if (event.type === "thinking") {
                         streamThinking += event.text;
                         updateBubble(false);
@@ -1102,23 +1219,26 @@
                 if (error.name !== "AbortError") showError(error.message);
             } finally {
                 const aborted = controller.signal.aborted;
+                const chatStillOpen = activeChatId !== null && bubble.isConnected;
                 controller = null;
                 setStreaming(false);
                 dots.remove();
-                updateBubble(true);
-                const finalParsed = splitThinkTags(rawReply);
-                if (aborted) {
-                    if (!finalParsed.answer && !finalParsed.thinking && !streamThinking) {
-                        bubble.parentElement?.remove();
+                if (chatStillOpen) {
+                    updateBubble(true);
+                    const finalParsed = splitThinkTags(rawReply);
+                    if (aborted) {
+                        if (!finalParsed.answer && !finalParsed.thinking && !streamThinking) {
+                            bubble.parentElement?.remove();
+                        }
+                        renderStoppedDivider();
+                    } else if (!finalParsed.answer && !streamThinking && !failed) {
+                        answerEl.textContent = "(brak odpowiedzi)";
                     }
-                    renderStoppedDivider();
-                } else if (!finalParsed.answer && !streamThinking && !failed) {
-                    answerEl.textContent = "(brak odpowiedzi)";
+                    if (finalParsed.answer && !failed && !aborted && settings.tts_enabled) {
+                        api("/api/tts/speak", { method: "POST", body: JSON.stringify({ text: finalParsed.answer }) }).catch(() => {});
+                    }
                 }
                 await refreshChats();
-                if (finalParsed.answer && !failed && !aborted && settings.tts_enabled) {
-                    api("/api/tts/speak", { method: "POST", body: JSON.stringify({ text: finalParsed.answer }) }).catch(() => {});
-                }
             }
         }
 
