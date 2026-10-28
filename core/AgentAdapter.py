@@ -85,13 +85,12 @@ class OllamaAgent(AgentBase):
                     reply.append(text)
                     yield {"type": "token", "text": text}
         except Exception as error:
+            self.history.pop()
             Logger.printError(f"Ollama: {error}")
             yield {"type": "error", "message": f"Błąd modelu: {error}"}
         finally:
             if reply:
                 self.history.append(ContextHandle.Create("".join(reply), "assistant"))
-            else:
-                self.history.pop()
 
 
 # Interfejsy i zaślepki STT / TTS
