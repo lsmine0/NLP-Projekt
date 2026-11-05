@@ -1,0 +1,3 @@
+ddgs
+beautifulsoup4
+requests
