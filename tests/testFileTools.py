@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.FileTools import (
     create_file,
