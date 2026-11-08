@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Optional
-
+import inspect
 
 class ToolHandle:
     """
@@ -11,6 +11,7 @@ class ToolHandle:
     def __init__(self) -> None:
         # Słownik przechowujący narzędzia (klucz: nazwa narzędzia)
         self._tools: Dict[str, Dict[str, Any]] = {}
+        self._functions: Dict[str, Any] = {}
 
     # --- CREATE ---
     def create_tool(
@@ -19,6 +20,7 @@ class ToolHandle:
         description: str,
         properties: Optional[Dict[str, Dict[str, Any]]] = None,
         required: Optional[List[str]] = None,
+        function = None,
         overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Tworzy nowe narzędzie i dodaje je do kolekcji."""
@@ -39,7 +41,21 @@ class ToolHandle:
         }
 
         self._tools[name] = tool_schema
+
+        if function is not None:
+            self.register_function(name, function)
+
         return tool_schema
+    
+    def register_function(self, name: str, function) -> None:
+
+        if name not in self._tools:
+            raise KeyError(f"Tool '{name}' does not exist.")
+
+        if not callable(function):
+            raise TypeError("Expected a callable Python function.")
+
+        self._functions[name] = function
 
     def add_parameter(
         self,
@@ -116,11 +132,44 @@ class ToolHandle:
 
         return self._tools[tool_name]
 
+    def execute_tool(self, name: str, arguments: Dict[str, Any]) -> str:
+        try:
+
+            function = self._functions.get(name)
+
+            if function is None:
+                raise KeyError(f"No implementation for tool '{name}'.")
+
+            if not isinstance(arguments, dict):
+                raise TypeError("Tool arguments must be a dictionary.")
+
+            inspect.signature(function).bind(**arguments)
+            
+            result = function(**arguments)
+
+            return json.dumps({
+                "success": True,
+                "result": result
+                }, ensure_ascii=False, default=str)
+
+        except Exception as e:
+
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "tool": name
+            }, ensure_ascii=False)    
+
+
     # --- DELETE ---
     def delete_tool(self, name: str) -> bool:
         """Usuwa narzędzie. Zwraca True, jeśli narzędzie istniało i zostało usunięte."""
-        return self._tools.pop(name, None) is not None
+        schema = self._tools.pop(name, None)
+        function = self._functions.pop(name, None)
+        return schema is not None
+    
 
     def clear_tools(self) -> None:
         """Usuwa wszystkie narzędzia."""
         self._tools.clear()
+        self._functions.clear()

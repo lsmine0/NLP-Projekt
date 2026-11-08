@@ -1,5 +1,4 @@
 from openai import OpenAI 
-import ContextHandle as Contx
 import ToolHandle as Thandle
 import requests
 import Logger
@@ -7,6 +6,9 @@ import Logger
 
 class OllamaHandler:
   def __init__(self, apiendpoint="localhost:11434", key="ollam"):
+
+    self.apiendpoint = apiendpoint
+    
     self.client = OpenAI(
     base_url = apiendpoint,
     api_key= key
@@ -20,7 +22,12 @@ class OllamaHandler:
     return self.client.models.list()
 
   def SetModel(self,ModelName):
-    if ModelName in self.GetModels():
+    models = self.GetModels().data
+
+    available_models = [
+        model.id for model in models
+    ]
+    if ModelName in available_models:
       self.model = ModelName
       Logger.printInfo(f"Model {ModelName} set on endpoint.")
       return True
@@ -39,7 +46,7 @@ class OllamaHandler:
         response.raise_for_status()
         Logger.printInfo(f"Model {self.model} Getinfo.")
         return response.json()
-      else
+      else:
         Logger.printError(f"Get info on Invalid model.")
         return {}
 
@@ -70,7 +77,7 @@ class OllamaHandler:
     return "vision" in self.GetCapabilities()         
 
 
-def Chat(self, messages, **kwargs):
+  def Chat(self, messages, **kwargs):
     if self.model is None:
         Logger.printError(f"No model selected")
 
@@ -82,30 +89,30 @@ def Chat(self, messages, **kwargs):
     Logger.printInfo(f"Sending request to {self.model}")
 
     return self.client.chat.completions.create(
-        model=self.model,
-        messages=messages,
-        tools=self.tools.get_tools_list(),
-        stream=False,
-        extra_body=extra_body or None,
-        **kwargs,
-    )
+            model=self.model,
+            messages=messages,
+            tools=self.ToolsHandle.get_tools_list(),
+            stream=False,
+            extra_body=extra_body or None,
+            **kwargs,
+        )
   
-def ChatStream(self, messages, **kwargs):
+  def ChatStream(self, messages, **kwargs):
     if self.model is None:
         Logger.printError(f"No model selected")
 
     extra_body = dict(kwargs.pop("extra_body", {}) or {})
 
     if self.thinking is not None:
-        extra_body["think"] = self.thinking
+            extra_body["think"] = self.thinking
 
     Logger.printInfo(f"Sending request to {self.model}")
 
     return self.client.chat.completions.create(
-        model=self.model,
-        messages=messages,
-        tools=self.tools.get_tools_list(),
-        stream=True,
-        extra_body=extra_body or None,
-        **kwargs,
+            model=self.model,
+            messages=messages,
+            tools=self.ToolsHandle.get_tools_list(),
+            stream=True,
+            extra_body=extra_body or None,
+            **kwargs,
     )
