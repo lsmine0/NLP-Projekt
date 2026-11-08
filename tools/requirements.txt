@@ -1,3 +1,5 @@
 ddgs
 beautifulsoup4
 requests
+sympy
+math
