@@ -1,6 +1,5 @@
 from typing import Any
 from openai import OpenAI 
-from handlers import ContextHandle as Contx
 from handlers import ToolHandle as Thandle
 import requests
 from core import Logger
