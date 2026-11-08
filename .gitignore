@@ -1,3 +1,16 @@
+# Środowiska wirtualne
+venv*/
+.venv/
+NLP_Pro/
+__pycache__/
+
+# Modele pobierane automatycznie przez skrypt
+*.onnx
+*.onnx.json
+
+# Pliki tymczasowe
+tts_outputs/temp_*.wav
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -218,3 +231,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local data files for chat history
+data/

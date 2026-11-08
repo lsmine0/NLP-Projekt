@@ -32,5 +32,3 @@ class ContextHandle:
             if wiad["role"] in lista:
                 wybrane = wybrane + wiad["role"] + " : " + wiad["content"] + "\n"
         return wybrane
-
-    

@@ -1,0 +1,17 @@
+PEŁNY TEKST:
+Gdybym miał powiedzieć, co cenię w życiu najbardziej, powiedziałbym, że ludzi, ludzi, którzy podali mi pomocną dłoń, kiedy sobie nie radziłem. Kiedy byłem sam i co ciekawe, to przypadkowe spotkania wpływają na nasze życie. Chodzi o to, że kiedy wyznaje się pewne wartości nawet z pozoru uniwersalne bywa, że nie znajduje się zrozumienia, które by tak rzecz, które pomaga się nam rozwijać. Ja miałem szczęście by tak rzetspony, ponieważ je znalazłem i dziękuję życiu, dziękuję mu, życie to śpiew, życie to taniec, życie to miłość. Wielu ludzi pyta mnie o to samo, ale jak ty to robisz, skąd czerpież tę radość, a ja im odpowiadam, że to proste, to umiłowanie życia, to właśnie ono sprawia. Że dzisiaj na przykład buduję maszyny, a jutro, kto wie dlaczego by nie oddam się pracy społecznej i będę odchodźby sadzić znaczy, Marchev.
+
+SEGMENTY Z CZASEM:
+[0.00s -> 8.34s] Gdybym miał powiedzieć, co cenię w życiu najbardziej, powiedziałbym, że ludzi, ludzi, którzy podali mi pomocną dłoń, kiedy sobie nie radziłem.
+[9.10s -> 15.14s] Kiedy byłem sam i co ciekawe, to przypadkowe spotkania wpływają na nasze życie.
+[15.90s -> 24.54s] Chodzi o to, że kiedy wyznaje się pewne wartości nawet z pozoru uniwersalne bywa, że nie znajduje się zrozumienia, które by tak rzecz, które pomaga się nam rozwijać.
+[25.34s -> 34.04s] Ja miałem szczęście by tak rzetspony, ponieważ je znalazłem i dziękuję życiu, dziękuję mu, życie to śpiew, życie to taniec, życie to miłość.
+[34.84s -> 44.44s] Wielu ludzi pyta mnie o to samo, ale jak ty to robisz, skąd czerpież tę radość, a ja im odpowiadam, że to proste, to umiłowanie życia, to właśnie ono sprawia.
+[45.24s -> 53.44s] Że dzisiaj na przykład buduję maszyny, a jutro, kto wie dlaczego by nie oddam się pracy społecznej i będę odchodźby sadzić znaczy, Marchev.
+
+--- PODSUMOWANIE STT ---
+Plik wejściowy: xtts.wav
+Model: base (cuda, float16)
+Wykryty język: pl (pewność: 1.00)
+Czas transkrypcji: 1.27s | Długość audio: 54.15s
+RTF (Real-Time Factor): 0.023
