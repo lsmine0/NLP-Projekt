@@ -1,6 +1,6 @@
 
-from OllamaHandle import OllamaHandler
-from AgentFlow import AgentLoop
+from handlers.OllamaHandle import OllamaHandler
+from core.AgentFlow import AgentLoop
 
 
 def AddNumbers(a: float, b: float):

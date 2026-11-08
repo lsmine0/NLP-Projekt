@@ -1,10 +1,10 @@
 
-import ContextHandle as Contx
+import handlers.ContextHandle as Contx
 import Logger
 import json
 
 
-class AgentLoop:
+class AgentFlow:
 
     def __init__(self, ollama_handler, max_iterations=10):
 
