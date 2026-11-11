@@ -290,25 +290,92 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
     )
 
 
+def _render_thinking_block(thinking_text: str) -> None:
+    """Czytelnie formatuje i zawija tekst myślenia modelu."""
+    import shutil
+    import textwrap
+
+    term_width = min(shutil.get_terminal_size(fallback=(80, 24)).columns, 80)
+    wrap_width = max(term_width - 6, 40)
+    bar_width = max(wrap_width + 2, 45)
+
+    print(f"\n\033[38;5;135m╭── Proces myślenia {'─' * max(0, bar_width - 19)}╮\033[0m")
+    for raw_line in thinking_text.strip().splitlines():
+        line = raw_line.strip()
+        if not line:
+            print("\033[38;5;135m│\033[0m")
+            continue
+        wrapped = textwrap.wrap(line, width=wrap_width)
+        for part in wrapped:
+            print(f"\033[38;5;135m│\033[0m  \033[2;37m{part}\033[0m")
+    print(f"\033[38;5;135m╰{'─' * (bar_width + 1)}╯\033[0m\n")
+
+
+def _render_cli_banner(model_name: str, audio_enabled: bool, endpoint: str) -> None:
+    """Rysuje nowoczesny, responsywny banner startowy dla trybu CLI, pokazujący model, endpoint, katalog i status audio."""
+    import shutil
+
+    term_width = min(shutil.get_terminal_size(fallback=(80, 24)).columns, 80)
+    inner_width = max(term_width - 4, 52)
+
+    cwd_str = str(Path.cwd())
+    if len(cwd_str) > inner_width - 12:
+        cwd_str = "..." + cwd_str[-(inner_width - 15):]
+
+    def pad_line(text_raw: str, text_visible_len: int) -> str:
+        spaces = max(0, inner_width - text_visible_len)
+        return f"\033[38;5;208m│\033[0m  {text_raw}{' ' * spaces}\033[38;5;208m│\033[0m"
+
+    title = " Jarvis CLI v1.0 "
+    top_bar = "─" * 2 + title + "─" * max(0, inner_width - len(title))
+    div_bar = "─" * (inner_width + 2)
+    bottom_bar = "─" * (inner_width + 2)
+
+    audio_status = "ON" if audio_enabled else "OFF (--no-audio)"
+    audio_color = "\033[32mON\033[0m" if audio_enabled else "\033[31mOFF (--no-audio)\033[0m"
+
+    print(f"\033[38;5;208m╭{top_bar}╮\033[0m")
+    print(pad_line(f"Model:    \033[1m{model_name}\033[0m", 10 + len(model_name)))
+    print(pad_line(f"Endpoint: \033[2m{endpoint}\033[0m", 10 + len(endpoint)))
+    print(pad_line(f"Katalog:  \033[2m{cwd_str}\033[0m", 10 + len(cwd_str)))
+    print(pad_line(f"Głos:     {audio_color}", 10 + len(audio_status)))
+    print(f"\033[38;5;208m├{div_bar}┤\033[0m")
+
+    cmd1 = "/voice (nagranie)  /think (myślenie)"
+    cmd2 = "/reset (nowy czat)  exit (wyjście)"
+    cmds_visible = f"Komendy:  {cmd1}  {cmd2}"
+    cmds_styled = f"Komendy:  \033[36m/voice\033[0m (nagranie)  \033[36m/think\033[0m (myślenie)  \033[36m/reset\033[0m (nowy czat)  \033[36mexit\033[0m (wyjście)"
+
+    if len(cmds_visible) <= inner_width:
+        print(pad_line(cmds_styled, len(cmds_visible)))
+    else:
+        line1_vis = f"Komendy:  {cmd1}"
+        line1_sty = f"Komendy:  \033[36m/voice\033[0m (nagranie)  \033[36m/think\033[0m (myślenie)"
+        line2_vis = f"          {cmd2}"
+        line2_sty = f"          \033[36m/reset\033[0m (nowy czat)  \033[36mexit\033[0m (wyjście)"
+        print(pad_line(line1_sty, len(line1_vis)))
+        print(pad_line(line2_sty, len(line2_vis)))
+
+    print(f"\033[38;5;208m╰{bottom_bar}╯\033[0m\n")
+
+
 def run_cli(runtime: AppRuntime) -> int:
     """Tryb CLI korzystający z tej samej pętli agenta co GUI."""
     Logger.VERBOSE = 1
     agent = runtime.agent_factory(runtime.settings)
     model_name = runtime.provider.model or runtime.settings.get("ollama_model") or "domyślny"
-    audio_label = "AKTYWNE" if runtime.audio_enabled else "ZABLOKOWANE (--no-audio)"
+
+    _render_cli_banner(model_name, runtime.audio_enabled, runtime.provider.base_url)
 
     show_thinking_live = False
     last_thinking = ""
 
-    print(f"=== Jarvis CLI (model: {model_name} | audio: {audio_label}) ===")
-    print("Komendy: /voice (nagraj głos), /think (pokaż ostatnie myślenie), /think live,")
-    print("         /logs (przełącz logi systemowe), /reset (nowa rozmowa), exit / quit\n")
-
     while True:
         try:
-            user_input = input("Ty: ").strip()
+            # Claude-style prompt marker
+            user_input = input("\033[1;38;5;208m❯\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
-            print()
+            print("\n\033[2mKończenie sesji Jarvis CLI...\033[0m")
             break
 
         if not user_input:
@@ -316,21 +383,22 @@ def run_cli(runtime: AppRuntime) -> int:
 
         cmd = user_input.lower()
         if cmd in ("exit", "quit", "/exit", "/quit"):
+            print("\033[2mDo widzenia!\033[0m")
             break
         if cmd == "/reset":
             agent.reset()
             last_thinking = ""
-            print("[System] Historia rozmowy została wyczyszczona.\n")
+            print("\033[2m[Jarvis] Historia rozmowy wyczyszczona.\033[0m\n")
             continue
         if cmd == "/voice":
             if not runtime.audio_enabled:
-                print("[System] Funkcje audio (STT/TTS) są zablokowane flagą --no-audio.\n")
+                print("\033[31m[System] Funkcje audio są wyłączone flagą --no-audio.\033[0m\n")
                 continue
             try:
                 runtime.stt.start()
-                input("[STT] Nagrywanie... Naciśnij Enter, aby zakończyć.")
+                input("\033[33m● Nagrywanie z mikrofonu... [Enter = stop]\033[0m")
                 user_input = runtime.stt.stop().strip()
-                print(f"[STT] Rozpoznano: {user_input}")
+                print(f"\033[2mRozpoznano:\033[0m {user_input}")
                 if not user_input:
                     continue
             except Exception as exc:
@@ -338,19 +406,19 @@ def run_cli(runtime: AppRuntime) -> int:
                 continue
         if cmd == "/think":
             if last_thinking:
-                print(f"\n--- Myślenie modelu (ostatnia odpowiedź) ---\n{last_thinking}\n--------------------------------------------\n")
+                _render_thinking_block(last_thinking)
             else:
-                print("[System] Brak zapisanego procesu myślenia z ostatniej odpowiedzi.\n")
+                print("\033[2m[Jarvis] Ostatnia odpowiedź nie zawierała procesu myślenia.\033[0m\n")
             continue
         if cmd == "/think live":
             show_thinking_live = not show_thinking_live
             state = "WŁĄCZONY" if show_thinking_live else "WYŁĄCZONY"
-            print(f"[System] Podgląd myślenia na żywo: {state}.\n")
+            print(f"\033[2m[Jarvis] Podgląd myślenia na żywo: {state}.\033[0m\n")
             continue
         if cmd == "/logs":
             Logger.VERBOSE = 3 if Logger.VERBOSE < 3 else 1
             state = "WŁĄCZONE" if Logger.VERBOSE == 3 else "WYŁĄCZONE"
-            print(f"[System] Logi diagnostyczne: {state}.\n")
+            print(f"\033[2m[Jarvis] Logi diagnostyczne: {state}.\033[0m\n")
             continue
 
         thinking_parts: list[str] = []
@@ -364,11 +432,11 @@ def run_cli(runtime: AppRuntime) -> int:
                 thinking_parts.append(text)
                 if show_thinking_live:
                     if not in_thinking:
-                        print("\n[Thinking] ", end="", flush=True)
+                        print("\n\033[35m[Thinking]\033[0m ", end="", flush=True)
                         in_thinking = True
                     print(text, end="", flush=True)
                 elif not in_thinking:
-                    print("\rAsystent: (myślenie...)", end="", flush=True)
+                    print("\r\033[2mJarvis myśli...\033[0m", end="", flush=True)
                     in_thinking = True
 
             elif event["type"] == "token":
@@ -379,7 +447,6 @@ def run_cli(runtime: AppRuntime) -> int:
                         print("\r" + " " * 30 + "\r", end="", flush=True)
                     in_thinking = False
                 if not header_printed:
-                    print("Asystent: ", end="", flush=True)
                     header_printed = True
                 token_text = event["text"]
                 reply_parts.append(token_text)
@@ -393,11 +460,11 @@ def run_cli(runtime: AppRuntime) -> int:
                 Logger.printError(event["message"])
 
         if in_thinking and not header_printed:
-            print("\r" + " " * 30 + "\rAsystent: (brak treści odpowiedzi)", end="", flush=True)
+            print("\r" + " " * 30 + "\r\033[2m(brak odpowiedzi)\033[0m", end="", flush=True)
 
         last_thinking = "".join(thinking_parts).strip()
         if last_thinking and not show_thinking_live:
-            print("\n  [Ukryto proces myślenia — wpisz /think, aby wyświetlić]\n")
+            print("\n\033[2m  (wpisz /think, aby zobaczyć proces myślenia)\033[0m\n")
         else:
             print("\n")
 
