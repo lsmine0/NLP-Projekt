@@ -1,5 +1,6 @@
-from typing import Iterator
+from typing import Any, Iterator
 from core import Logger
+from core.AgentFlow import AgentFlow
 from handlers.ContextHandle import ContextHandle
 from handlers.OllamaHandle import OllamaHandler
 
@@ -26,33 +27,59 @@ class AgentBase:
         raise NotImplementedError
 
 
-# Czat z modelem przez OllamaHandler
+# Czat z modelem oparty na AgentFlow (wspólna pętla z toolami i budżetem kontekstu)
 class OllamaAgent(AgentBase):
+    default_tool_handle: Any = None
+    default_system_prompt: str | None = None
+    default_api_key: str = "ollam"
 
-    def __init__(self, endpoint: str, model: str = "", system_prompt: str | None = None) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        model: str = "",
+        system_prompt: str | None = None,
+        tool_handle: Any = None,
+        api_key: str | None = None,
+    ) -> None:
         self.endpoint = endpoint
         self.model = model
-        self.system_prompt = system_prompt
-        self.handler: OllamaHandler | None = None
-        self.history: list[dict] = []
-        self.reset()
+        self.system_prompt = (
+            system_prompt if system_prompt is not None else self.default_system_prompt
+        )
+        self.tool_handle = (
+            tool_handle if tool_handle is not None else self.default_tool_handle
+        )
+        self.api_key = api_key or self.default_api_key
+        self.flow = AgentFlow(
+            base_url=self.endpoint,
+            key=self.api_key,
+            system_prompt=self.system_prompt,
+        )
+        if self.tool_handle is not None:
+            self.flow.ollama.ToolsHandle = self.tool_handle
+            self.flow.tools = self.tool_handle
+        self.handler: OllamaHandler = self.flow.ollama
+        self.history: list[dict] = self.flow.context
 
     def reset(self) -> None:
-        self.history = []
+        self.flow.context.clear()
         if self.system_prompt:
-            self.history.append(ContextHandle.Create(self.system_prompt))
+            self.flow.context.append(ContextHandle.Create(self.system_prompt))
+        self.history = self.flow.context
 
     def load_history(self, messages: list[dict]) -> None:
         self.reset()
-        self.history.extend(
+        self.flow.context.extend(
             ContextHandle.Create(message["content"], message["role"])
             for message in messages
             if message.get("role") in ("user", "assistant")
         )
+        self.history = self.flow.context
 
     def _get_handler(self) -> OllamaHandler:
-        if self.handler is None:
-            self.handler = OllamaHandler(self.endpoint)
+        if self.tool_handle is not None:
+            self.handler.ToolsHandle = self.tool_handle
+            self.flow.tools = self.tool_handle
         if not self.handler.model or (self.model and self.handler.model != self.model):
             names = [model.id for model in self.handler.GetModels()]
             target = self.model or (names[0] if names else "")
@@ -64,33 +91,23 @@ class OllamaAgent(AgentBase):
 
     def stream(self, user_text: str) -> Iterator[dict]:
         try:
-            handler = self._get_handler()
+            self._get_handler()
         except Exception as error:
             Logger.printError(f"Ollama: {error}")
             yield {"type": "error", "message": f"Nie można połączyć z modelem ({self.endpoint}): {error}"}
             return
 
-        self.history.append(ContextHandle.Create(user_text, "user"))
-        reply: list[str] = []
+        snapshot = list(self.flow.context)
         try:
-            for chunk in handler.ChatStream(self.history):
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                thinking = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
-                if thinking:
-                    yield {"type": "thinking", "text": thinking}
-                text = delta.content
-                if text:
-                    reply.append(text)
-                    yield {"type": "token", "text": text}
+            for event in self.flow.RunStream(user_text, as_events=True):
+                if isinstance(event, dict):
+                    yield event
         except Exception as error:
-            self.history.pop()
+            self.flow.context[:] = snapshot
             Logger.printError(f"Ollama: {error}")
             yield {"type": "error", "message": f"Błąd modelu: {error}"}
         finally:
-            if reply:
-                self.history.append(ContextHandle.Create("".join(reply), "assistant"))
+            self.history = self.flow.context
 
 
 # Interfejsy i zaślepki STT / TTS

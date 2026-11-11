@@ -191,8 +191,9 @@ class AgentFlow:
 
             message = response.choices[0].message
 
-            if message.reasoning_content:
-                Logger.printThinking(message.reasoning_content)
+            reasoning = getattr(message, "reasoning_content", None)
+            if reasoning:
+                Logger.printThinking(reasoning)
 
             if not message.tool_calls:
                 answer = message.content or ""
@@ -204,14 +205,15 @@ class AgentFlow:
                 )
                 return answer
 
-            calls = [
-                {
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "args": json.loads(tc.function.arguments or "{}"),
-                }
-                for tc in message.tool_calls
-            ]
+            calls = []
+            for tc in message.tool_calls:
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    calls.append({
+                        "id": tc.id,
+                        "name": fn.name,
+                        "args": json.loads(fn.arguments or "{}"),
+                    })
 
             Contx.ContextHandle.Append(
                 self.context,
@@ -222,7 +224,9 @@ class AgentFlow:
             if limit_reached:
                 return self._last_answer or ""
 
-    def RunStream(self, user_input: str):
+        return self._last_answer or ""
+
+    def RunStream(self, user_input: str, as_events: bool = False):
         self.RefreshModelContext()
         self._total_tool_calls_count = 0
         Contx.ContextHandle.Add(self.context, user_input, role="user")
@@ -248,10 +252,10 @@ class AgentFlow:
                 delta = chunk.choices[0].delta
                 reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
                 if reasoning:
-                    yield reasoning
+                    yield {"type": "thinking", "text": reasoning} if as_events else reasoning
                 text = delta.content
                 if text:
-                    yield text
+                    yield {"type": "token", "text": text} if as_events else text
                     answer_parts.append(text)
                 tc = getattr(delta, "tool_calls", None)
                 if tc:
@@ -259,17 +263,18 @@ class AgentFlow:
             self._CalibrateTokens(self.context, last_chunk)
             answer = "".join(answer_parts)
             if tool_calls:
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments or "{}",
-                        },
-                    }
-                    for tc in tool_calls
-                ]
+                tool_call_dicts = []
+                for tc in tool_calls:
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        tool_call_dicts.append({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": fn.name or "",
+                                "arguments": fn.arguments or "{}",
+                            },
+                        })
                 Contx.ContextHandle.Append(
                     self.context,
                     {"role": "assistant", "content": answer, "tool_calls": tool_call_dicts},
