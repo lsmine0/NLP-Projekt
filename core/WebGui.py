@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from typing import Callable
 import json
 import sys
 import threading
@@ -12,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from core import Logger
-from core.AgentAdapter import AgentBase, create_agent, create_stt, create_tts
+from core.AgentAdapter import AgentBase, STTBase, TTSBase, create_agent, create_stt, create_tts
 from core.ChatStore import ChatStore, SettingsStore
 from handlers.OllamaHandle import OllamaHandler
 
@@ -21,10 +24,14 @@ HOST = "127.0.0.1"
 PORT = 8000
 
 app = FastAPI()
-store = ChatStore()
-settings_store = SettingsStore()
-stt = create_stt()
-tts = create_tts()
+
+# Zależności wstrzykiwane przy starcie przez start_gui() (brak inicjalizacji przy imporcie)
+store: ChatStore = None  # type: ignore[assignment]
+settings_store: SettingsStore = None  # type: ignore[assignment]
+stt: STTBase = None  # type: ignore[assignment]
+tts: TTSBase = None  # type: ignore[assignment]
+agent_factory: Callable[[dict], AgentBase] = create_agent
+audio_enabled: bool = True
 sessions: dict[str, AgentBase] = {}
 
 
@@ -50,7 +57,7 @@ def run_cleanup() -> None:
 def get_agent(chat_id: str) -> AgentBase:
     agent = sessions.get(chat_id)
     if agent is None:
-        agent = create_agent(settings_store.get())
+        agent = agent_factory(settings_store.get())
         agent.load_history(store.get(chat_id)["messages"])
         sessions[chat_id] = agent
     return agent
@@ -64,7 +71,7 @@ def index() -> FileResponse:
 # Endpointy ustawień i listy modeli
 @app.get("/api/settings")
 def get_settings():
-    return settings_store.get()
+    return {**settings_store.get(), "audio_enabled": audio_enabled}
 
 
 @app.put("/api/settings")
@@ -75,7 +82,7 @@ def put_settings(changes: dict):
     if "ollama_endpoint" in changes or "ollama_model" in changes:
         sessions.clear()
     run_cleanup()
-    return settings
+    return {**settings, "audio_enabled": audio_enabled}
 
 
 @app.get("/api/models")
@@ -199,19 +206,47 @@ def tts_stop():
         return error(str(exc), 500)
 
 
-if __name__ == "__main__":
+def start_gui(
+    *,
+    chat_store: ChatStore | None = None,
+    config_store: SettingsStore | None = None,
+    stt_handle: STTBase | None = None,
+    tts_handle: TTSBase | None = None,
+    custom_agent_factory: Callable[[dict], AgentBase] | None = None,
+    audio_enabled: bool = True,
+    host: str = HOST,
+    port: int = PORT,
+) -> None:
+    """Funkcja startowa GUI — inicjalizuje przekazane zależności i uruchamia okno."""
+    global store, settings_store, stt, tts, agent_factory
+    globals()["audio_enabled"] = audio_enabled
+
+    settings_store = config_store if config_store is not None else SettingsStore()
+    store = chat_store if chat_store is not None else ChatStore()
+    stt = stt_handle if stt_handle is not None else create_stt()
+    tts = tts_handle if tts_handle is not None else create_tts()
+    if custom_agent_factory is not None:
+        agent_factory = custom_agent_factory
+
     run_cleanup()
     threading.Thread(
         target=uvicorn.run,
         args=(app,),
-        kwargs={"host": HOST, "port": PORT},
+        kwargs={"host": host, "port": port},
         daemon=True,
     ).start()
-    webview.create_window(
-        "Jarvis",
-        f"http://{HOST}:{PORT}",
-        width=1000,
-        height=720,
-        min_size=(650, 500),
-    )
-    webview.start()
+    try:
+        webview.create_window(
+            "Jarvis",
+            f"http://{host}:{port}",
+            width=1000,
+            height=720,
+            min_size=(650, 500),
+        )
+        webview.start()
+    finally:
+        sessions.clear()
+
+
+if __name__ == "__main__":
+    start_gui()

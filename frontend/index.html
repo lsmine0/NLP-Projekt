@@ -102,6 +102,7 @@
         html.icons-offline .ph-chat-text::before { content: "🗨"; }
         html.icons-offline .ph-trash::before { content: "✕"; }
         html.icons-offline .ph-microphone::before { content: "🎤"; }
+        html.icons-offline .ph-microphone-slash::before { content: "🚫"; }
         html.icons-offline .ph-record::before { content: "●"; }
         html.icons-offline .ph-paper-plane-tilt::before { content: "↑"; }
         html.icons-offline .ph-stop::before { content: "■"; }
@@ -517,7 +518,8 @@
         #send:hover { background: var(--accent-hover); }
         #send.stop { background: var(--danger); }
         #microphone { color: var(--text-secondary); background: var(--bg-subtle); }
-        #microphone:hover { background: var(--bg-hover); }
+        #microphone:hover:not(:disabled) { background: var(--bg-hover); }
+        #microphone:disabled { opacity: 0.45; cursor: not-allowed; }
         #microphone.listening {
             color: #fff;
             background: var(--danger);
@@ -1279,7 +1281,7 @@
                     } else if (!finalParsed.answer && !streamThinking && !failed) {
                         answerEl.textContent = "(brak odpowiedzi)";
                     }
-                    if (finalParsed.answer && !failed && !aborted && settings.tts_enabled) {
+                    if (finalParsed.answer && !failed && !aborted && settings.tts_enabled && settings.audio_enabled !== false) {
                         api("/api/tts/speak", { method: "POST", body: JSON.stringify({ text: finalParsed.answer }) }).catch(() => {});
                     }
                 }
@@ -1314,7 +1316,10 @@
         function resetMic() {
             recording = false;
             micButton.classList.remove("listening");
-            micIcon.className = "ph ph-microphone";
+            const audioOff = settings.audio_enabled === false;
+            micIcon.className = audioOff ? "ph ph-microphone-slash" : "ph ph-microphone";
+            micButton.disabled = audioOff;
+            micButton.title = audioOff ? "Mikrofon zablokowany (--no-audio)" : "Mikrofon";
             micButton.setAttribute("aria-pressed", "false");
             micStatus.textContent = "";
         }
@@ -1374,11 +1379,16 @@
         $("new-chat").addEventListener("click", newChat);
 
         function fillSettingsForm() {
+            const audioOff = settings.audio_enabled === false;
             $("ollama-endpoint").value = settings.ollama_endpoint ?? "";
             $("max-chats").value = settings.max_chats ?? 0;
             $("max-age-days").value = settings.max_age_days ?? 0;
-            $("tts-enabled").checked = Boolean(settings.tts_enabled);
-            $("stt-auto-send").checked = Boolean(settings.stt_auto_send);
+            $("tts-enabled").checked = !audioOff && Boolean(settings.tts_enabled);
+            $("stt-auto-send").checked = !audioOff && Boolean(settings.stt_auto_send);
+            $("tts-enabled").disabled = audioOff;
+            $("stt-auto-send").disabled = audioOff;
+            $("stop-voice").style.display = audioOff ? "none" : "inline-flex";
+            resetMic();
             showHistory.checked = settings.show_history !== false;
             historySection.hidden = !showHistory.checked;
             applyTheme(settings.theme || "dark", false);

@@ -121,10 +121,19 @@ class OllamaHandler:
         info = self.GetModelInfo()
         if not isinstance(info, dict):
             return DEFAULT_NUM_CTX
-        params = info.get("parameters") or {}
-        n_ctx = params.get("num_ctx")
-        if isinstance(n_ctx, (int, float)):
-            return int(n_ctx)
+        params = info.get("parameters")
+        if isinstance(params, dict):
+            n_ctx = params.get("num_ctx")
+            if isinstance(n_ctx, (int, float)):
+                return int(n_ctx)
+        elif isinstance(params, str):
+            for line in params.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0].lower() == "num_ctx":
+                    try:
+                        return int(parts[1])
+                    except ValueError:
+                        pass
         for key, value in (info.get("options") or {}).items():
             if "num_ctx" in key.lower():
                 try:
