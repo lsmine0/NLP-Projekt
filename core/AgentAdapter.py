@@ -5,6 +5,7 @@ from core import Logger
 from core.AgentFlow import AgentFlow
 from handlers.ContextHandle import ContextHandle
 from handlers.OllamaHandle import OllamaHandler
+from handlers.ToolHandle import ToolHandle
 
 
 # Interfejs bazowy agenta dla czatu
@@ -31,7 +32,7 @@ class AgentBase:
 
 # Czat z modelem oparty na AgentFlow (wspólna pętla z toolami i budżetem kontekstu)
 class OllamaAgent(AgentBase):
-    default_tool_handle: Any = None
+    default_tool_handle: ToolHandle | None = None
     default_system_prompt: str | None = None
     default_api_key: str = "ollam"
 
@@ -40,7 +41,7 @@ class OllamaAgent(AgentBase):
         endpoint: str,
         model: str = "",
         system_prompt: str | None = None,
-        tool_handle: Any = None,
+        tool_handle: ToolHandle | None = None,
         api_key: str | None = None,
     ) -> None:
         self.endpoint = endpoint
@@ -56,10 +57,8 @@ class OllamaAgent(AgentBase):
             base_url=self.endpoint,
             key=self.api_key,
             system_prompt=self.system_prompt,
+            tool_handle=self.tool_handle,
         )
-        if self.tool_handle is not None:
-            self.flow.ollama.ToolsHandle = self.tool_handle
-            self.flow.tools = self.tool_handle
         self.handler: OllamaHandler = self.flow.ollama
         self.history: list[dict] = self.flow.context
 
@@ -79,9 +78,6 @@ class OllamaAgent(AgentBase):
         self.history = self.flow.context
 
     def _get_handler(self) -> OllamaHandler:
-        if self.tool_handle is not None:
-            self.handler.ToolsHandle = self.tool_handle
-            self.flow.tools = self.tool_handle
         if not self.handler.model or (self.model and self.handler.model != self.model):
             names = [model.id for model in self.handler.GetModels()]
             target = self.model or (names[0] if names else "")
@@ -156,8 +152,10 @@ class StubTTS(TTSBase):
 
 
 # Funkcje tworzące instancje (miejsce podpięcia AgentLoop, STTHandle, TTSHandle)
-def create_agent(settings: dict) -> AgentBase:
-    return OllamaAgent(settings["ollama_endpoint"], settings["ollama_model"])
+def create_agent(settings: dict, *, tool_handle: ToolHandle | None = None) -> AgentBase:
+    return OllamaAgent(
+        settings["ollama_endpoint"], settings["ollama_model"], tool_handle=tool_handle
+    )
 
 
 def create_stt() -> STTBase:
