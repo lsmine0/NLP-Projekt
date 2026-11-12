@@ -5,6 +5,7 @@ NLP_Pro/
 __pycache__/
 
 # Modele pobierane automatycznie przez skrypt
+models/
 *.onnx
 *.onnx.json
 

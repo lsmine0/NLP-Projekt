@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Iterator
 from core import Logger
 from core.AgentFlow import AgentFlow

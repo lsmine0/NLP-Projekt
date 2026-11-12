@@ -55,6 +55,36 @@ class DisabledTTS(TTSBase):
         pass
 
 
+class RealSTTAdapter(STTBase):
+    """Adapter mapujący interfejs STTBase na istniejący STTHandle."""
+
+    def __init__(self, handle: Any) -> None:
+        self.handle = handle
+
+    def start(self) -> None:
+        self.handle.start_recording()
+
+    def stop(self) -> str:
+        return self.handle.stop_recording()
+
+
+class RealTTSAdapter(TTSBase):
+    """Adapter mapujący interfejs TTSBase na istniejący TTSHandle."""
+
+    def __init__(self, handle: Any) -> None:
+        self.handle = handle
+
+    def speak(self, text: str) -> None:
+        self.handle.speak(text)
+
+    def stop(self) -> None:
+        self.handle.stop()
+
+    def close(self) -> None:
+        if hasattr(self.handle, "close"):
+            self.handle.close()
+
+
 @dataclass
 class AppRuntime:
     """Kontener zależności aplikacji budowany w main.py."""
@@ -242,16 +272,33 @@ def build_audio(no_audio: bool = False) -> tuple[STTBase, TTSBase]:
         Logger.printInfo("Flaga --no-audio: funkcje głosowe (STT/TTS) zostały zablokowane.")
         return DisabledSTT(), DisabledTTS()
 
+    stt: STTBase
+    tts: TTSBase
+
     try:
-        stt = create_stt()
+        candidate_stt = create_stt()
+        if not isinstance(candidate_stt, StubSTT):
+            stt = candidate_stt
+        else:
+            from handlers.STTHandle import STTHandle
+
+            stt = RealSTTAdapter(STTHandle(language="pl"))
+            Logger.printInfo("Załadowano moduł STT (Faster-Whisper).")
     except Exception as exc:
-        Logger.printWarning(f"Brak zależności audio dla STT ({exc}) — używam StubSTT.")
+        Logger.printWarning(f"Moduł STT niedostępny ({exc}) — używam StubSTT.")
         stt = StubSTT()
 
     try:
-        tts = create_tts()
+        candidate_tts = create_tts()
+        if not isinstance(candidate_tts, StubTTS):
+            tts = candidate_tts
+        else:
+            from handlers.TTSHandle import TTSHandle
+
+            tts = RealTTSAdapter(TTSHandle(on_error=lambda err: Logger.printError(f"TTS: {err}")))
+            Logger.printInfo("Załadowano moduł TTS (Piper).")
     except Exception as exc:
-        Logger.printWarning(f"Brak zależności audio dla TTS ({exc}) — używam StubTTS.")
+        Logger.printWarning(f"Moduł TTS niedostępny ({exc}) — używam StubTTS.")
         tts = StubTTS()
 
     return stt, tts
@@ -311,7 +358,9 @@ def _render_thinking_block(thinking_text: str) -> None:
     print(f"\033[38;5;135m╰{'─' * (bar_width + 1)}╯\033[0m\n")
 
 
-def _render_cli_banner(model_name: str, audio_enabled: bool, endpoint: str) -> None:
+def _render_cli_banner(
+    model_name: str, audio_enabled: bool, endpoint: str, tts_enabled: bool = False
+) -> None:
     """Rysuje nowoczesny, responsywny banner startowy dla trybu CLI, pokazujący model, endpoint, katalog i status audio."""
     import shutil
 
@@ -326,13 +375,19 @@ def _render_cli_banner(model_name: str, audio_enabled: bool, endpoint: str) -> N
         spaces = max(0, inner_width - text_visible_len)
         return f"\033[38;5;208m│\033[0m  {text_raw}{' ' * spaces}\033[38;5;208m│\033[0m"
 
-    title = " Jarvis CLI v1.0 "
+    title = " Jarvis CLI v0.1 "
     top_bar = "─" * 2 + title + "─" * max(0, inner_width - len(title))
     div_bar = "─" * (inner_width + 2)
     bottom_bar = "─" * (inner_width + 2)
 
-    audio_status = "ON" if audio_enabled else "OFF (--no-audio)"
-    audio_color = "\033[32mON\033[0m" if audio_enabled else "\033[31mOFF (--no-audio)\033[0m"
+    if not audio_enabled:
+        audio_status = "OFF (--no-audio)"
+        audio_color = "\033[31mOFF (--no-audio)\033[0m"
+    else:
+        tts_part = "TTS: ON" if tts_enabled else "TTS: OFF"
+        audio_status = f"ON ({tts_part})"
+        tts_col = "\033[32mON\033[0m" if tts_enabled else "\033[33mOFF\033[0m"
+        audio_color = f"\033[32mON\033[0m (TTS: {tts_col})"
 
     print(f"\033[38;5;208m╭{top_bar}╮\033[0m")
     print(pad_line(f"Model:    \033[1m{model_name}\033[0m", 10 + len(model_name)))
@@ -341,20 +396,19 @@ def _render_cli_banner(model_name: str, audio_enabled: bool, endpoint: str) -> N
     print(pad_line(f"Głos:     {audio_color}", 10 + len(audio_status)))
     print(f"\033[38;5;208m├{div_bar}┤\033[0m")
 
-    cmd1 = "/voice (nagranie)  /think (myślenie)"
-    cmd2 = "/reset (nowy czat)  exit (wyjście)"
-    cmds_visible = f"Komendy:  {cmd1}  {cmd2}"
-    cmds_styled = f"Komendy:  \033[36m/voice\033[0m (nagranie)  \033[36m/think\033[0m (myślenie)  \033[36m/reset\033[0m (nowy czat)  \033[36mexit\033[0m (wyjście)"
+    line1_vis = "Komendy:  /voice (mikrofon)       /devices (mikrofony)"
+    line1_sty = "Komendy:  \033[36m/voice\033[0m (mikrofon)       \033[36m/devices\033[0m (mikrofony)"
+    line2_vis = "          /think (myślenie)       /think live (na żywo)"
+    line2_sty = "          \033[36m/think\033[0m (myślenie)       \033[36m/think live\033[0m (na żywo)"
+    line3_vis = "          /tts (głos ON/OFF)      /logs (logi)"
+    line3_sty = "          \033[36m/tts\033[0m (głos ON/OFF)      \033[36m/logs\033[0m (logi)"
+    line4_vis = "          /reset (nowy czat)      exit (wyjście)"
+    line4_sty = "          \033[36m/reset\033[0m (nowy czat)      \033[36mexit\033[0m (wyjście)"
 
-    if len(cmds_visible) <= inner_width:
-        print(pad_line(cmds_styled, len(cmds_visible)))
-    else:
-        line1_vis = f"Komendy:  {cmd1}"
-        line1_sty = f"Komendy:  \033[36m/voice\033[0m (nagranie)  \033[36m/think\033[0m (myślenie)"
-        line2_vis = f"          {cmd2}"
-        line2_sty = f"          \033[36m/reset\033[0m (nowy czat)  \033[36mexit\033[0m (wyjście)"
-        print(pad_line(line1_sty, len(line1_vis)))
-        print(pad_line(line2_sty, len(line2_vis)))
+    print(pad_line(line1_sty, len(line1_vis)))
+    print(pad_line(line2_sty, len(line2_vis)))
+    print(pad_line(line3_sty, len(line3_vis)))
+    print(pad_line(line4_sty, len(line4_vis)))
 
     print(f"\033[38;5;208m╰{bottom_bar}╯\033[0m\n")
 
@@ -365,7 +419,12 @@ def run_cli(runtime: AppRuntime) -> int:
     agent = runtime.agent_factory(runtime.settings)
     model_name = runtime.provider.model or runtime.settings.get("ollama_model") or "domyślny"
 
-    _render_cli_banner(model_name, runtime.audio_enabled, runtime.provider.base_url)
+    _render_cli_banner(
+        model_name,
+        runtime.audio_enabled,
+        runtime.provider.base_url,
+        runtime.settings.get("tts_enabled", False),
+    )
 
     show_thinking_live = False
     last_thinking = ""
@@ -404,12 +463,85 @@ def run_cli(runtime: AppRuntime) -> int:
             except Exception as exc:
                 Logger.printError(f"STT: {exc}")
                 continue
+        if cmd.startswith("/devices"):
+            try:
+                import sounddevice as sd
+
+                parts = cmd.split()
+                stt_handle = getattr(runtime.stt, "handle", None)
+
+                if len(parts) > 1 and parts[1].isdigit():
+                    dev_id = int(parts[1])
+                    if stt_handle is not None and hasattr(stt_handle, "input_device"):
+                        setattr(stt_handle, "input_device", dev_id)
+                        print(f"\033[32m[STT] Ustawiono urządzenie wejściowe audio na ID {dev_id}.\033[0m\n")
+                    else:
+                        print("\033[33m[STT] Aktywny adapter audio nie obsługuje zmiany urządzenia.\033[0m\n")
+                    continue
+
+                devices = sd.query_devices()
+                curr_dev = getattr(stt_handle, "input_device", None) if stt_handle is not None else None
+                default_in = curr_dev if curr_dev is not None else sd.default.device[0]
+                print("\n\033[2mDostępne mikrofony (wpisz '/devices <id>', aby zmienić):\033[0m")
+                found = False
+                for idx, dev in enumerate(devices):
+                    if dev.get("max_input_channels", 0) > 0:
+                        is_def = " \033[32m[AKTYWNY]\033[0m" if idx == default_in else ""
+                        print(f"  \033[36m[{idx}]\033[0m {dev.get('name')}{is_def}")
+                        found = True
+                if not found:
+                    print("  \033[31mNie wykryto żadnego mikrofonu w systemie.\033[0m")
+                print()
+            except Exception as exc:
+                print(f"\033[31mBłąd odczytu urządzeń audio: {exc}\033[0m\n")
+            continue
+
+        if cmd.startswith("/tts"):
+            if not runtime.audio_enabled:
+                print("\033[31m[System] Funkcje audio są wyłączone flagą --no-audio.\033[0m\n")
+                continue
+            parts = user_input.split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+
+            if arg.lower() in ("test", "demo"):
+                test_text = "Cześć! Synteza mowy Piper działa poprawnie."
+                print(f"\033[2m[TTS] Testowanie syntezy mowy: '{test_text}'...\033[0m")
+                try:
+                    runtime.tts.speak(test_text)
+                    print("\033[32m[TTS] Odtwarzanie zakończone pomyślnie.\033[0m\n")
+                except Exception as exc:
+                    print(f"\033[31m[TTS] Błąd syntezy mowy: {exc}\033[0m\n")
+                continue
+
+            if arg and arg.lower() not in ("on", "off"):
+                print(f"\033[2m[TTS] Odtwarzanie tekstu: '{arg}'...\033[0m")
+                try:
+                    runtime.tts.speak(arg)
+                    print("\033[32m[TTS] Odtwarzanie zakończone.\033[0m\n")
+                except Exception as exc:
+                    print(f"\033[31m[TTS] Błąd syntezy mowy: {exc}\033[0m\n")
+                continue
+
+            current_tts = bool(runtime.settings.get("tts_enabled", False))
+            if arg.lower() == "on":
+                new_tts = True
+            elif arg.lower() == "off":
+                new_tts = False
+            else:
+                new_tts = not current_tts
+
+            runtime.settings_store.update({"tts_enabled": new_tts})
+            state_str = "\033[32mWŁĄCZONA\033[0m" if new_tts else "\033[31mWYŁĄCZONA\033[0m"
+            print(f"[Jarvis] Automatyczna synteza mowy (TTS): {state_str}.\n")
+            continue
+
         if cmd == "/think":
             if last_thinking:
                 _render_thinking_block(last_thinking)
             else:
                 print("\033[2m[Jarvis] Ostatnia odpowiedź nie zawierała procesu myślenia.\033[0m\n")
             continue
+
         if cmd == "/think live":
             show_thinking_live = not show_thinking_live
             state = "WŁĄCZONY" if show_thinking_live else "WYŁĄCZONY"
