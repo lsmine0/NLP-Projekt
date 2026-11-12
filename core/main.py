@@ -142,6 +142,8 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "show_history": "Pokazywanie paska historii rozmów w GUI (true / false)",
 }
 
+DEFAULT_MCP_CONFIG_NAME = "mcp_servers.json"
+
 
 def _parse_config_value(key: str, raw_val: str) -> Any:
     default_val = SettingsStore.defaults().get(key)
@@ -216,6 +218,46 @@ def build_tools() -> ToolHandle:
     register_math_tools(tool_handle, overwrite=True)
     register_web_search_tools(tool_handle, overwrite=True)
     return tool_handle
+
+
+# 2b. MCP (opcjonalne; brak pakietu lub konfiguracji nie blokuje aplikacji)
+def build_mcp(
+    tool_handle: ToolHandle,
+    settings_store: SettingsStore,
+    config_path: str | None = None,
+    enabled: bool = True,
+):
+    if not enabled:
+        Logger.printInfo("Obsługa MCP wyłączona flagą --no-mcp.")
+        return None
+
+    try:
+        from handlers.MCPHandle import MCPHandle
+    except Exception as exc:
+        Logger.printWarning(f"Pakiet MCP niedostępny ({exc}) — pomijam serwery MCP.")
+        return None
+
+    path = (
+        Path(config_path).expanduser()
+        if config_path
+        else settings_store.path.parent / DEFAULT_MCP_CONFIG_NAME
+    )
+    if config_path and not path.is_file():
+        Logger.printWarning(f"Nie znaleziono pliku konfiguracji MCP: {path}")
+        return None
+    mcp_handle = None
+    try:
+        mcp_handle = MCPHandle(config_path=path, tool_handle=tool_handle)
+        mcp_handle.start()
+        return mcp_handle
+    except Exception as exc:
+        Logger.printWarning(f"Nie udało się uruchomić MCP ({path}): {exc}")
+        if mcp_handle is not None:
+            try:
+                mcp_handle.close()
+            except Exception:
+                pass
+        return None
 
 
 # 3. Provider / Model
@@ -310,6 +352,12 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
     settings = settings_store.get()
 
     tool_handle = build_tools()
+    mcp_handle = build_mcp(
+        tool_handle,
+        settings_store,
+        config_path=args.mcp_config,
+        enabled=not args.no_mcp,
+    )
     provider = build_provider(
         settings,
         tool_handle=tool_handle,
@@ -334,6 +382,7 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
         tts=tts,
         agent_factory=agent_factory,
         audio_enabled=not args.no_audio,
+        mcp_clients=[mcp_handle] if mcp_handle is not None else [],
     )
 
 
@@ -641,6 +690,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         "  python main.py --config ollama_model=qwen3.5:4b   # zmiana modelu w ustawieniach i start\n"
         "  python main.py --config moj_config.json           # wczytanie ustawień ze wskazanego pliku JSON\n"
         "  python main.py --no-audio                         # uruchomienie bez mikrofonu (STT) i głosu (TTS)\n"
+        "  python main.py --no-mcp                           # uruchomienie bez serwerów MCP\n"
+        "  python main.py --mcp-config config/mcp_servers.example.json  # własna konfiguracja MCP\n"
         "  python main.py --benchmark                        # uruchomienie testów BenchmarkRunner\n"
     )
     parser = argparse.ArgumentParser(
@@ -666,6 +717,21 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         ),
     )
     parser.add_argument("--no-audio", action="store_true", help="Wyłącz obsługę STT i TTS.")
+    parser.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Wyłącz ładowanie serwerów MCP.",
+    )
+    parser.add_argument(
+        "--mcp-config",
+        type=str,
+        default=None,
+        metavar="PLIK",
+        help=(
+            "Ścieżka do pliku konfiguracji serwerów MCP. "
+            "Domyślnie: <katalog ustawień>/mcp_servers.json."
+        ),
+    )
     parser.add_argument(
         "--provider",
         type=str,
