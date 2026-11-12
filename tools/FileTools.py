@@ -316,8 +316,17 @@ def find_files(
         "skipped_files": skipped_files,
     }
 
+AVAILABLE_FILE_TOOLS = {
+    function.__name__: function
+    for function in (
+        create_file, read_file, write_file, move_file, delete_file,
+        list_directory, search_in_files, get_file_info, find_files,
+    )
+}
+
+
 # Rejestracja narzędzi w ToolHandle
-def register_tools(tool_handle):
+def register_tools(tool_handle: ToolHandle) -> None:
     path_property = {
         "type": "string",
         "description": "Path to the file or directory.",
@@ -483,7 +492,5 @@ def register_tools(tool_handle):
 
     for definition in definitions:
         tool_handle.create_tool(**definition)
-
-
-tools = ToolHandle()
-register_tools(tools)
+        name = definition["name"]
+        tool_handle.register_function(name, AVAILABLE_FILE_TOOLS[name])

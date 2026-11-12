@@ -2,6 +2,11 @@ import json
 from typing import Any, Dict, List, Optional
 import inspect
 
+
+class ToolErrorText(str):
+    """Tekst błędu dla narzędzi, których bezpośrednie API zwraca str."""
+
+
 class ToolHandle:
     """
     Klasa realizująca operacje CRUD na słowniku narzędzi (tools)
@@ -133,33 +138,34 @@ class ToolHandle:
         return self._tools[tool_name]
 
     def execute_tool(self, name: str, arguments: Dict[str, Any]) -> str:
+        """Wykonuje narzędzie i zwraca JSON z polami success, error i result."""
         try:
-
             function = self._functions.get(name)
-
             if function is None:
                 raise KeyError(f"No implementation for tool '{name}'.")
-
             if not isinstance(arguments, dict):
                 raise TypeError("Tool arguments must be a dictionary.")
 
             inspect.signature(function).bind(**arguments)
-            
             result = function(**arguments)
-
-            return json.dumps({
-                "success": True,
-                "result": result
-                }, ensure_ascii=False, default=str)
-
-        except Exception as e:
-
-            return json.dumps({
-                "success": False,
-                "error": str(e),
-                "tool": name
-            }, ensure_ascii=False)    
-
+            if isinstance(result, ToolErrorText):
+                output = {"success": False, "error": str(result), "result": None}
+            elif isinstance(result, dict) and isinstance(result.get("success"), bool):
+                success = result["success"]
+                payload = {key: value for key, value in result.items() if key not in ("success", "error")}
+                output = {
+                    "success": success,
+                    "error": None if success else result.get("error"),
+                    "result": payload if success else None,
+                }
+            else:
+                output = {"success": True, "error": None, "result": result}
+            return json.dumps(output, ensure_ascii=False, default=str)
+        except Exception as error:
+            return json.dumps(
+                {"success": False, "error": str(error), "result": None},
+                ensure_ascii=False,
+            )
 
     # --- DELETE ---
     def delete_tool(self, name: str) -> bool:

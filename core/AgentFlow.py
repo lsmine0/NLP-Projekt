@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import handlers.ContextHandle as Contx
 from handlers.OllamaHandle import OllamaHandler
+from handlers.ToolHandle import ToolHandle
 from core import Logger
 import json
 from typing import Optional
@@ -22,15 +23,17 @@ class AgentFlow:
         reserve_tokens: int = 1024,
         max_tool_calls: int = 15,
         auto_budget: bool = True,
+        *,
+        tool_handle: ToolHandle | None = None,
     ):
-        # AgentFlow uses OllamaHandler directly instead of receiving it via constructor
+        self.tools = tool_handle if tool_handle is not None else ToolHandle()
         self.ollama = OllamaHandler(
             base_url=base_url,
             key=key,
             reserve_tokens=reserve_tokens,
             auto_budget=auto_budget,
+            tool_handle=self.tools,
         )
-        self.tools = self.ollama.ToolsHandle
 
         self.num_ctx = 0
         self.reserve_tokens = max(256, int(reserve_tokens))
@@ -145,7 +148,7 @@ class AgentFlow:
                     raw_result = json.dumps({
                         "success": False,
                         "error": f"Tool '{call['name']}' timed out after {DEFAULT_TOOL_TIMEOUT}s",
-                        "tool": call["name"],
+                        "result": None,
                     }, ensure_ascii=False)
 
             result, truncated = Contx.ContextHandle.TruncateJson(
