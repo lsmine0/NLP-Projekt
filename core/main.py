@@ -16,8 +16,6 @@ from core.AgentAdapter import (
     AgentBase,
     OllamaAgent,
     STTBase,
-    StubSTT,
-    StubTTS,
     TTSBase,
     create_agent,
     create_stt,
@@ -53,36 +51,6 @@ class DisabledTTS(TTSBase):
 
     def stop(self) -> None:
         pass
-
-
-class RealSTTAdapter(STTBase):
-    """Adapter mapujący interfejs STTBase na istniejący STTHandle."""
-
-    def __init__(self, handle: Any) -> None:
-        self.handle = handle
-
-    def start(self) -> None:
-        self.handle.start_recording()
-
-    def stop(self) -> str:
-        return self.handle.stop_recording()
-
-
-class RealTTSAdapter(TTSBase):
-    """Adapter mapujący interfejs TTSBase na istniejący TTSHandle."""
-
-    def __init__(self, handle: Any) -> None:
-        self.handle = handle
-
-    def speak(self, text: str) -> None:
-        self.handle.speak(text)
-
-    def stop(self) -> None:
-        self.handle.stop()
-
-    def close(self) -> None:
-        if hasattr(self.handle, "close"):
-            self.handle.close()
 
 
 @dataclass
@@ -267,41 +235,14 @@ def build_provider(
 
 
 # 4. Audio (STT / TTS)
-def build_audio(no_audio: bool = False) -> tuple[STTBase, TTSBase]:
+def build_audio(
+    no_audio: bool = False, settings: dict | None = None
+) -> tuple[STTBase, TTSBase]:
     if no_audio:
         Logger.printInfo("Flaga --no-audio: funkcje głosowe (STT/TTS) zostały zablokowane.")
         return DisabledSTT(), DisabledTTS()
 
-    stt: STTBase
-    tts: TTSBase
-
-    try:
-        candidate_stt = create_stt()
-        if not isinstance(candidate_stt, StubSTT):
-            stt = candidate_stt
-        else:
-            from handlers.STTHandle import STTHandle
-
-            stt = RealSTTAdapter(STTHandle(language="pl"))
-            Logger.printInfo("Załadowano moduł STT (Faster-Whisper).")
-    except Exception as exc:
-        Logger.printWarning(f"Moduł STT niedostępny ({exc}) — używam StubSTT.")
-        stt = StubSTT()
-
-    try:
-        candidate_tts = create_tts()
-        if not isinstance(candidate_tts, StubTTS):
-            tts = candidate_tts
-        else:
-            from handlers.TTSHandle import TTSHandle
-
-            tts = RealTTSAdapter(TTSHandle(on_error=lambda err: Logger.printError(f"TTS: {err}")))
-            Logger.printInfo("Załadowano moduł TTS (Piper).")
-    except Exception as exc:
-        Logger.printWarning(f"Moduł TTS niedostępny ({exc}) — używam StubTTS.")
-        tts = StubTTS()
-
-    return stt, tts
+    return create_stt(settings), create_tts(settings)
 
 
 # 5. Spięcie zależności w jednym miejscu: config -> ToolHandle -> provider -> agent -> GUI/CLI
@@ -316,7 +257,7 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
         provider_name=args.provider,
         require_connection=bool(args.cli or args.benchmark),
     )
-    stt, tts = build_audio(no_audio=args.no_audio)
+    stt, tts = build_audio(no_audio=args.no_audio, settings=settings)
 
     # Przekazanie wspólnego ToolHandle do ujednoliconego agenta
     OllamaAgent.default_tool_handle = tool_handle
