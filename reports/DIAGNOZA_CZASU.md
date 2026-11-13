@@ -74,6 +74,8 @@ launchctl setenv OLLAMA_CONTEXT_LENGTH 16384
 launchctl setenv OLLAMA_KEEP_ALIVE 30m
 ```
 
+Ustawienie przez `launchctl setenv` obowiązuje do restartu systemu – po restarcie trzeba je powtórzyć.
+
 Windows (potem restart Ollamy z zasobnika):
 
 ```bash
