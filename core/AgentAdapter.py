@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Iterator
 from core import Logger
 from core.AgentFlow import AgentFlow
 from handlers.ContextHandle import ContextHandle
 from handlers.OllamaHandle import OllamaHandler
+
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 
 # Interfejs bazowy agenta dla czatu
@@ -71,8 +74,14 @@ class OllamaAgent(AgentBase):
 
     def load_history(self, messages: list[dict]) -> None:
         self.reset()
+        # ChatStore zapisuje odpowiedź razem z <think>...</think> (do wyświetlenia w GUI);
+        # do modelu stary reasoning nie wraca - zjadałby kontekst przy każdej wiadomości.
         self.flow.context.extend(
-            ContextHandle.Create(message["content"], message["role"])
+            ContextHandle.Create(
+                _THINK_RE.sub("", message["content"]).strip()
+                if message["role"] == "assistant" else message["content"],
+                message["role"],
+            )
             for message in messages
             if message.get("role") in ("user", "assistant")
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Optional
 from openai import OpenAI
 from handlers import ToolHandle as Thandle
@@ -13,13 +14,16 @@ DEFAULT_NUM_CTX = 16384
 class OllamaHandler:
     def __init__(
         self,
-        base_url="http://localhost:11434/v1",
+        base_url="http://127.0.0.1:11434/v1",
         key="ollam",
         reserve_tokens: int = 1024,
         auto_budget: bool = True,
     ):
         if "://" not in base_url:
             base_url = f"http://{base_url}"
+        # localhost -> 127.0.0.1: na Windowsie "localhost" najpierw próbuje IPv6 (::1),
+        # na którym Ollama nie słucha, co dokłada ~2 s do każdego requestu.
+        base_url = re.sub(r"^(\w+://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", base_url)
         self.base_url = base_url.rstrip("/").removesuffix("/v1") + "/v1"
         self.client = OpenAI(
             base_url=self.base_url,
@@ -118,6 +122,11 @@ class OllamaHandler:
         if not self.model:
             Logger.printWarning("No model selected - default num_ctx used.")
             return DEFAULT_NUM_CTX
+        # Ollama: /api/ps podaje kontekst, z jakim model jest FAKTYCZNIE załadowany
+        # (np. OLLAMA_CONTEXT_LENGTH serwera). Działa tylko, gdy model jest w pamięci.
+        loaded_ctx = self._GetLoadedNumCtx()
+        if loaded_ctx:
+            return loaded_ctx
         info = self.GetModelInfo()
         if not isinstance(info, dict):
             return DEFAULT_NUM_CTX
@@ -143,10 +152,40 @@ class OllamaHandler:
         for key, value in (info.get("model_info") or {}).items():
             if key.endswith(".context_length"):
                 try:
-                    return int(value)
+                    # To MAKSIMUM modelu (np. 262144 dla qwen3:4b), a nie kontekst,
+                    # z którym serwer go uruchamia - nie zakładamy więcej niż domyślne.
+                    return min(int(value), DEFAULT_NUM_CTX)
                 except (TypeError, ValueError):
                     continue
         return DEFAULT_NUM_CTX
+
+    def _GetLoadedNumCtx(self) -> Optional[int]:
+        try:
+            response = requests.get(f"{self.base_url.removesuffix('/v1')}/api/ps", timeout=2)
+            response.raise_for_status()
+            for loaded in response.json().get("models", []):
+                if loaded.get("name") == self.model or loaded.get("model") == self.model:
+                    ctx = loaded.get("context_length")
+                    return int(ctx) if ctx else None
+        except Exception:
+            pass
+        return None
+
+    def Warmup(self) -> bool:
+        """Ładuje model do pamięci (tylko Ollama), żeby pierwsze zapytanie nie płaciło za zimny start."""
+        if not self.model:
+            return False
+        try:
+            requests.post(
+                f"{self.base_url.removesuffix('/v1')}/api/generate",
+                json={"model": self.model},
+                timeout=300,
+            ).raise_for_status()
+            Logger.printInfo(f"Model {self.model} warmed up.")
+            return True
+        except Exception as exc:
+            Logger.printWarning(f"Warmup pominięty (serwer bez /api/generate?): {exc}")
+            return False
 
     def EnsureContextBudget(
         self,
@@ -208,6 +247,11 @@ class OllamaHandler:
 
         if self.thinking is not None:
             extra_body["think"] = self.thinking
+            # Endpoint /v1 Ollamy ignoruje "think" - steruje się nim przez reasoning_effort.
+            if self.thinking is False:
+                extra_body["reasoning_effort"] = "none"
+            elif isinstance(self.thinking, str):
+                extra_body["reasoning_effort"] = self.thinking
 
         tools = self.ToolsHandle.get_tools_list()
         if tools:

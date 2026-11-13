@@ -54,6 +54,19 @@ def run_cleanup() -> None:
         sessions.pop(chat_id, None)
 
 
+def warmup_model() -> None:
+    # Ładuje model do pamięci w tle, żeby pierwsza wiadomość nie płaciła za zimny start.
+    try:
+        cfg = settings_store.get()
+        handler = OllamaHandler(cfg["ollama_endpoint"])
+        names = [m.id for m in handler.GetModels()]
+        target = cfg["ollama_model"] or (names[0] if names else "")
+        if target and handler.SetModel(target):
+            handler.Warmup()
+    except Exception as exc:
+        Logger.printWarning(f"Warmup modelu nieudany: {exc}")
+
+
 def get_agent(chat_id: str) -> AgentBase:
     agent = sessions.get(chat_id)
     if agent is None:
@@ -81,6 +94,7 @@ def put_settings(changes: dict):
     settings = settings_store.update(changes)
     if "ollama_endpoint" in changes or "ollama_model" in changes:
         sessions.clear()
+        threading.Thread(target=warmup_model, daemon=True).start()
     run_cleanup()
     return {**settings, "audio_enabled": audio_enabled}
 
@@ -229,6 +243,7 @@ def start_gui(
         agent_factory = custom_agent_factory
 
     run_cleanup()
+    threading.Thread(target=warmup_model, daemon=True).start()
     threading.Thread(
         target=uvicorn.run,
         args=(app,),
