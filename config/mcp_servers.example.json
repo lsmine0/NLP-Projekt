@@ -1,0 +1,18 @@
+{
+  "servers": {
+    "echo": {
+      "transport": "stdio",
+      "command": "${PYTHON}",
+      "args": ["${PROJECT_ROOT}/tests/mcp/mcp_echo_server.py"],
+      "cwd": "${PROJECT_ROOT}",
+      "env": {},
+      "enabled": true,
+      "timeout_s": 8,
+      "startup_timeout_s": 20,
+      "tools": {
+        "allow": ["echo", "add"],
+        "deny": []
+      }
+    }
+  }
+}

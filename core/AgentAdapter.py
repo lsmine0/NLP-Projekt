@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
+from importlib.util import find_spec
 from typing import Any, Iterator
 from core import Logger
 from core.AgentFlow import AgentFlow
 from handlers.ContextHandle import ContextHandle
 from handlers.OllamaHandle import OllamaHandler
+from handlers.ToolHandle import ToolHandle
+from handlers.STTHandle import STTHandle
+from handlers.TTSHandle import SoundDeviceSink, TTSHandle
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
@@ -34,7 +38,7 @@ class AgentBase:
 
 # Czat z modelem oparty na AgentFlow (wspólna pętla z toolami i budżetem kontekstu)
 class OllamaAgent(AgentBase):
-    default_tool_handle: Any = None
+    default_tool_handle: ToolHandle | None = None
     default_system_prompt: str | None = None
     default_api_key: str = "ollam"
 
@@ -43,7 +47,7 @@ class OllamaAgent(AgentBase):
         endpoint: str,
         model: str = "",
         system_prompt: str | None = None,
-        tool_handle: Any = None,
+        tool_handle: ToolHandle | None = None,
         api_key: str | None = None,
     ) -> None:
         self.endpoint = endpoint
@@ -59,10 +63,8 @@ class OllamaAgent(AgentBase):
             base_url=self.endpoint,
             key=self.api_key,
             system_prompt=self.system_prompt,
+            tool_handle=self.tool_handle,
         )
-        if self.tool_handle is not None:
-            self.flow.ollama.ToolsHandle = self.tool_handle
-            self.flow.tools = self.tool_handle
         self.handler: OllamaHandler = self.flow.ollama
         self.history: list[dict] = self.flow.context
 
@@ -88,9 +90,6 @@ class OllamaAgent(AgentBase):
         self.history = self.flow.context
 
     def _get_handler(self) -> OllamaHandler:
-        if self.tool_handle is not None:
-            self.handler.ToolsHandle = self.tool_handle
-            self.flow.tools = self.tool_handle
         if not self.handler.model or (self.model and self.handler.model != self.model):
             names = [model.id for model in self.handler.GetModels()]
             target = self.model or (names[0] if names else "")
@@ -164,14 +163,80 @@ class StubTTS(TTSBase):
         Logger.printInfo("TTS (zaślepka): stop")
 
 
+class RealSTT(STTBase):
+    """Adapter mapujący interfejs STTBase na STTHandle."""
+
+    def __init__(self, handle: STTHandle) -> None:
+        self.handle = handle
+
+    def start(self) -> None:
+        self.handle.start_recording()
+
+    def stop(self) -> str:
+        return self.handle.stop_recording()
+
+
+class RealTTS(TTSBase):
+    """Adapter mapujący interfejs TTSBase na TTSHandle."""
+
+    def __init__(self, handle: TTSHandle) -> None:
+        self.handle = handle
+
+    def speak(self, text: str) -> None:
+        self.handle.speak_stream((text,))
+        if not self.handle.wait():
+            raise RuntimeError("Odtwarzanie mowy nie zakończyło się.")
+        if self.handle.last_error is not None:
+            raise self.handle.last_error
+
+    def stop(self) -> None:
+        self.handle.stop()
+
+    def close(self) -> None:
+        self.handle.close()
+
+
+def _missing_audio_dependencies(*modules: str) -> list[str]:
+    return [module for module in modules if find_spec(module) is None]
+
+
 # Funkcje tworzące instancje (miejsce podpięcia AgentLoop, STTHandle, TTSHandle)
-def create_agent(settings: dict) -> AgentBase:
-    return OllamaAgent(settings["ollama_endpoint"], settings["ollama_model"])
+def create_agent(settings: dict, *, tool_handle: ToolHandle | None = None) -> AgentBase:
+    return OllamaAgent(
+        settings["ollama_endpoint"], settings["ollama_model"], tool_handle=tool_handle
+    )
 
 
-def create_stt() -> STTBase:
-    return StubSTT()
+def create_stt(settings: dict | None = None) -> STTBase:
+    config = settings or {}
+    missing = _missing_audio_dependencies(
+        "sounddevice", "numpy", "faster_whisper", "ctranslate2"
+    )
+    if missing:
+        Logger.printWarning(
+            f"Moduł STT niedostępny (brak: {', '.join(missing)}) — używam StubSTT."
+        )
+        return StubSTT()
+
+    handle = STTHandle(
+        model_size=config.get("stt_model", "base"),
+        device=config.get("stt_device"),
+        input_device=config.get("stt_input_device"),
+        language=config.get("stt_language", "pl"),
+    )
+    return RealSTT(handle)
 
 
-def create_tts() -> TTSBase:
-    return StubTTS()
+def create_tts(settings: dict | None = None) -> TTSBase:
+    config = settings or {}
+    missing = _missing_audio_dependencies("sounddevice", "piper", "onnxruntime")
+    if missing:
+        Logger.printWarning(
+            f"Moduł TTS niedostępny (brak: {', '.join(missing)}) — używam StubTTS."
+        )
+        return StubTTS()
+
+    model_path = config.get("tts_model") or None
+    sink = SoundDeviceSink(device=config.get("tts_sink_device"))
+    handle = TTSHandle(model_path=model_path, sink=sink)
+    return RealTTS(handle)

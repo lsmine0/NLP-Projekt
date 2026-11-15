@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 from openai import OpenAI
-from handlers import ToolHandle as Thandle
+from handlers.ToolHandle import ToolHandle
 import handlers.ContextHandle as Contx
 import requests
 from core import Logger
@@ -18,6 +18,8 @@ class OllamaHandler:
         key="ollam",
         reserve_tokens: int = 1024,
         auto_budget: bool = True,
+        *,
+        tool_handle: ToolHandle | None = None,
     ):
         if "://" not in base_url:
             base_url = f"http://{base_url}"
@@ -31,7 +33,7 @@ class OllamaHandler:
         )
         self.model = None
         self.thinking = None
-        self.ToolsHandle = Thandle.ToolHandle()
+        self.ToolsHandle = tool_handle
         self.reserve_tokens = max(256, int(reserve_tokens))
         self.auto_budget = bool(auto_budget)
 
@@ -253,7 +255,7 @@ class OllamaHandler:
             elif isinstance(self.thinking, str):
                 extra_body["reasoning_effort"] = self.thinking
 
-        tools = self.ToolsHandle.get_tools_list()
+        tools = self.ToolsHandle.get_tools_list() if self.ToolsHandle is not None else []
         if tools:
             kwargs["tools"] = tools
 

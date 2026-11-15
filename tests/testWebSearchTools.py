@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -109,15 +110,17 @@ def test_tresc_artykulu():
     assert "high-level" in wynik, "Brak treści artykułu w domyślnym limicie znaków"
 
 
-@test("Wywołanie przez agenta (mapowanie po nazwie z AVAILABLE_WEB_TOOLS)")
+@test("Wywołanie pobierania strony przez ToolHandle.execute_tool")
 def test_wywolanie_agenta():
-    tool_call = {"name": "fetch_webpage_content", "arguments": {"url": TEST_URL_PL, "max_chars": 200}}
-    func = AVAILABLE_WEB_TOOLS.get(tool_call["name"])
-    assert func is not None, f"Nie znaleziono funkcji dla '{tool_call['name']}'"
-
-    wynik = func(**tool_call["arguments"])
-    print(wynik)
-    assert wynik.startswith("Treść strony"), f"Wywołanie dynamiczne nie zwróciło treści: {wynik[:200]}"
+    tools = ToolHandle()
+    register_web_search_tools(tools)
+    response = falszywa_odpowiedz(b"<article>Test pobierania</article>", "text/html")
+    with patch("tools.WebSearchTools.requests.get", return_value=response):
+        wynik = json.loads(tools.execute_tool(
+            "fetch_webpage_content", {"url": TEST_URL_PL, "max_chars": 200}
+        ))
+    assert wynik["success"], wynik["error"]
+    assert "Test pobierania" in wynik["result"], wynik
 
 
 @test("Nieistniejąca domena")

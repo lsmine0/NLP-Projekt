@@ -1,6 +1,6 @@
 
-from handlers.OllamaHandle import OllamaHandler
-from core.AgentFlow import AgentLoop
+from core.AgentFlow import AgentFlow
+from handlers.ToolHandle import ToolHandle
 
 
 def AddNumbers(a: float, b: float):
@@ -10,7 +10,9 @@ def AddNumbers(a: float, b: float):
 def main():
 
     # Initialize Ollama.
-    ollama = OllamaHandler()
+    tools = ToolHandle()
+    agent = AgentFlow(tool_handle=tools)
+    ollama = agent.ollama
 
     models = [
     model.id
@@ -52,7 +54,7 @@ def main():
 
 
     # Register tool schema.
-    ollama.ToolsHandle.create_tool(
+    tools.create_tool(
         name="add_numbers",
         description="Adds two numbers together.",
         properties={
@@ -69,13 +71,10 @@ def main():
     )
 
     # Register Python implementation.
-    ollama.ToolsHandle.register_function(
+    tools.register_function(
         "add_numbers",
         AddNumbers
     )
-
-    # Initialize agent.
-    agent = AgentLoop(ollama)
 
     # Select execution mode.
     stream = input("Enable streaming? [y/N]: ").lower() == "y"

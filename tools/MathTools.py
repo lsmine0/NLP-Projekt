@@ -561,6 +561,9 @@ def register_math_tools(tool_handle: ToolHandle, overwrite: bool = True) -> None
         overwrite=overwrite,
     )
 
+    for name, function in AVAILABLE_MATH_TOOLS.items():
+        tool_handle.register_function(name, function)
+
 
 AVAILABLE_MATH_TOOLS: dict[str, Callable[..., dict[str, Any]]] = {
     "calculate_expression": calculate_expression,
