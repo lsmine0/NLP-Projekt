@@ -1282,7 +1282,8 @@
                         answerEl.textContent = "(brak odpowiedzi)";
                     }
                     if (finalParsed.answer && !failed && !aborted && settings.tts_enabled && settings.audio_enabled !== false) {
-                        api("/api/tts/speak", { method: "POST", body: JSON.stringify({ text: finalParsed.answer }) }).catch(() => {});
+                        api("/api/tts/speak", { method: "POST", body: JSON.stringify({ text: finalParsed.answer }) })
+                            .catch((error) => { micStatus.textContent = `Błąd TTS: ${error.message}`; });
                     }
                 }
                 await refreshChats();

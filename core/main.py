@@ -15,8 +15,6 @@ from core import Logger
 from core.AgentAdapter import (
     AgentBase,
     STTBase,
-    StubSTT,
-    StubTTS,
     TTSBase,
     create_agent,
     create_stt,
@@ -50,36 +48,6 @@ class DisabledTTS(TTSBase):
 
     def stop(self) -> None:
         pass
-
-
-class RealSTTAdapter(STTBase):
-    """Adapter mapujący interfejs STTBase na istniejący STTHandle."""
-
-    def __init__(self, handle: Any) -> None:
-        self.handle = handle
-
-    def start(self) -> None:
-        self.handle.start_recording()
-
-    def stop(self) -> str:
-        return self.handle.stop_recording()
-
-
-class RealTTSAdapter(TTSBase):
-    """Adapter mapujący interfejs TTSBase na istniejący TTSHandle."""
-
-    def __init__(self, handle: Any) -> None:
-        self.handle = handle
-
-    def speak(self, text: str) -> None:
-        self.handle.speak(text)
-
-    def stop(self) -> None:
-        self.handle.stop()
-
-    def close(self) -> None:
-        if hasattr(self.handle, "close"):
-            self.handle.close()
 
 
 @dataclass
@@ -138,6 +106,8 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "theme": "Motyw kolorystyczny GUI (dark / light)",
     "show_history": "Pokazywanie paska historii rozmów w GUI (true / false)",
 }
+
+DEFAULT_MCP_CONFIG_NAME = "mcp_servers.json"
 
 
 def _parse_config_value(key: str, raw_val: str) -> Any:
@@ -206,6 +176,55 @@ def build_config(config_arg: str | None = None) -> tuple[SettingsStore, ChatStor
     return settings_store, chat_store
 
 
+# 2. ToolHandle
+def build_tools() -> ToolHandle:
+    tool_handle = ToolHandle()
+    register_file_tools(tool_handle)
+    register_math_tools(tool_handle, overwrite=True)
+    register_web_search_tools(tool_handle, overwrite=True)
+    return tool_handle
+
+
+# 2b. MCP (opcjonalne; brak pakietu lub konfiguracji nie blokuje aplikacji)
+def build_mcp(
+    tool_handle: ToolHandle,
+    settings_store: SettingsStore,
+    config_path: str | None = None,
+    enabled: bool = True,
+):
+    if not enabled:
+        Logger.printInfo("Obsługa MCP wyłączona flagą --no-mcp.")
+        return None
+
+    try:
+        from handlers.MCPHandle import MCPHandle
+    except Exception as exc:
+        Logger.printWarning(f"Pakiet MCP niedostępny ({exc}) — pomijam serwery MCP.")
+        return None
+
+    path = (
+        Path(config_path).expanduser()
+        if config_path
+        else settings_store.path.parent / DEFAULT_MCP_CONFIG_NAME
+    )
+    if config_path and not path.is_file():
+        Logger.printWarning(f"Nie znaleziono pliku konfiguracji MCP: {path}")
+        return None
+    mcp_handle = None
+    try:
+        mcp_handle = MCPHandle(config_path=path, tool_handle=tool_handle)
+        mcp_handle.start()
+        return mcp_handle
+    except Exception as exc:
+        Logger.printWarning(f"Nie udało się uruchomić MCP ({path}): {exc}")
+        if mcp_handle is not None:
+            try:
+                mcp_handle.close()
+            except Exception:
+                pass
+        return None
+
+
 # 3. Provider / Model
 def build_provider(
     settings: dict,
@@ -254,41 +273,14 @@ def build_provider(
 
 
 # 4. Audio (STT / TTS)
-def build_audio(no_audio: bool = False) -> tuple[STTBase, TTSBase]:
+def build_audio(
+    no_audio: bool = False, settings: dict | None = None
+) -> tuple[STTBase, TTSBase]:
     if no_audio:
         Logger.printInfo("Flaga --no-audio: funkcje głosowe (STT/TTS) zostały zablokowane.")
         return DisabledSTT(), DisabledTTS()
 
-    stt: STTBase
-    tts: TTSBase
-
-    try:
-        candidate_stt = create_stt()
-        if not isinstance(candidate_stt, StubSTT):
-            stt = candidate_stt
-        else:
-            from handlers.STTHandle import STTHandle
-
-            stt = RealSTTAdapter(STTHandle(language="pl"))
-            Logger.printInfo("Załadowano moduł STT (Faster-Whisper).")
-    except Exception as exc:
-        Logger.printWarning(f"Moduł STT niedostępny ({exc}) — używam StubSTT.")
-        stt = StubSTT()
-
-    try:
-        candidate_tts = create_tts()
-        if not isinstance(candidate_tts, StubTTS):
-            tts = candidate_tts
-        else:
-            from handlers.TTSHandle import TTSHandle
-
-            tts = RealTTSAdapter(TTSHandle(on_error=lambda err: Logger.printError(f"TTS: {err}")))
-            Logger.printInfo("Załadowano moduł TTS (Piper).")
-    except Exception as exc:
-        Logger.printWarning(f"Moduł TTS niedostępny ({exc}) — używam StubTTS.")
-        tts = StubTTS()
-
-    return stt, tts
+    return create_stt(settings), create_tts(settings)
 
 
 # 5. Spięcie zależności w jednym miejscu: config -> ToolHandle -> provider -> agent -> GUI/CLI
@@ -297,13 +289,19 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
     settings = settings_store.get()
 
     tool_handle = build_tools()
+    mcp_handle = build_mcp(
+        tool_handle,
+        settings_store,
+        config_path=args.mcp_config,
+        enabled=not args.no_mcp,
+    )
     provider = build_provider(
         settings,
         tool_handle=tool_handle,
         provider_name=args.provider,
         require_connection=bool(args.cli or args.benchmark),
     )
-    stt, tts = build_audio(no_audio=args.no_audio)
+    stt, tts = build_audio(no_audio=args.no_audio, settings=settings)
 
     def agent_factory(current_settings: dict | None = None) -> AgentBase:
         cfg = current_settings or settings_store.get()
@@ -318,6 +316,7 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
         tts=tts,
         agent_factory=agent_factory,
         audio_enabled=not args.no_audio,
+        mcp_clients=[mcp_handle] if mcp_handle is not None else [],
     )
 
 
@@ -625,6 +624,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         "  python main.py --config ollama_model=qwen3.5:4b   # zmiana modelu w ustawieniach i start\n"
         "  python main.py --config moj_config.json           # wczytanie ustawień ze wskazanego pliku JSON\n"
         "  python main.py --no-audio                         # uruchomienie bez mikrofonu (STT) i głosu (TTS)\n"
+        "  python main.py --no-mcp                           # uruchomienie bez serwerów MCP\n"
+        "  python main.py --mcp-config config/mcp_servers.example.json  # własna konfiguracja MCP\n"
         "  python main.py --benchmark                        # uruchomienie testów BenchmarkRunner\n"
     )
     parser = argparse.ArgumentParser(
@@ -650,6 +651,21 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         ),
     )
     parser.add_argument("--no-audio", action="store_true", help="Wyłącz obsługę STT i TTS.")
+    parser.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Wyłącz ładowanie serwerów MCP.",
+    )
+    parser.add_argument(
+        "--mcp-config",
+        type=str,
+        default=None,
+        metavar="PLIK",
+        help=(
+            "Ścieżka do pliku konfiguracji serwerów MCP. "
+            "Domyślnie: <katalog ustawień>/mcp_servers.json."
+        ),
+    )
     parser.add_argument(
         "--provider",
         type=str,
