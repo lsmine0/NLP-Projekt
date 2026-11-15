@@ -109,7 +109,7 @@ class SettingsStore:
     @staticmethod
     def defaults() -> dict:
         return {
-            "ollama_endpoint": os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434/v1"),
+            "ollama_endpoint": os.environ.get("OLLAMA_ENDPOINT", "http://127.0.0.1:11434/v1"),
             "ollama_model": os.environ.get("OLLAMA_MODEL", ""),
             "max_chats": 50,
             "max_age_days": 30,
