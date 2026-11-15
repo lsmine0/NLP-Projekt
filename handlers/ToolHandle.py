@@ -46,7 +46,42 @@ class ToolHandle:
             self.register_function(name, function)
 
         return tool_schema
-    
+
+    def create_tool_from_schema(
+        self,
+        name: str,
+        description: str,
+        parameters: Dict[str, Any],
+        function=None,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        """Tworzy narzędzie z gotowym schematem parametrów (np. z MCP).
+
+        W odróżnieniu od ``create_tool`` nie buduje schematu od zera, więc
+        zachowuje pełną strukturę JSON Schema dostarczoną przez serwer MCP.
+        """
+        if name in self._tools and not overwrite:
+            raise ValueError(f"Narzędzie '{name}' już istnieje.")
+
+        if not isinstance(parameters, dict):
+            raise TypeError("Tool parameters must be a dictionary.")
+
+        tool_schema = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+            },
+        }
+
+        self._tools[name] = tool_schema
+
+        if function is not None:
+            self.register_function(name, function)
+
+        return tool_schema
+
     def register_function(self, name: str, function) -> None:
 
         if name not in self._tools:
