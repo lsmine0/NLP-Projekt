@@ -115,6 +115,12 @@ class SettingsStore:
             "max_age_days": 30,
             "tts_enabled": False,
             "stt_auto_send": False,
+            "stt_model": "base",
+            "stt_device": None,
+            "stt_input_device": None,
+            "stt_language": "pl",
+            "tts_model": "",
+            "tts_sink_device": None,
             "theme": "dark",
             "show_history": True,
         }

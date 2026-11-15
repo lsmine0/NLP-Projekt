@@ -223,8 +223,9 @@ def start_gui(
 
     settings_store = config_store if config_store is not None else SettingsStore()
     store = chat_store if chat_store is not None else ChatStore()
-    stt = stt_handle if stt_handle is not None else create_stt()
-    tts = tts_handle if tts_handle is not None else create_tts()
+    settings = settings_store.get()
+    stt = stt_handle if stt_handle is not None else create_stt(settings)
+    tts = tts_handle if tts_handle is not None else create_tts(settings)
     if custom_agent_factory is not None:
         agent_factory = custom_agent_factory
 
