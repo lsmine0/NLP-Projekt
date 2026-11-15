@@ -2,13 +2,15 @@
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
-import inspect
 import json
 from pathlib import Path
 import re
 import statistics
 import tempfile
 import time
+
+from tools.FileTools import AVAILABLE_FILE_TOOLS
+from tools.ToolBuilder import build_tools
 
 ROOT = Path(__file__).resolve().parent
 
@@ -33,18 +35,16 @@ def load_cases(paths):
     return cases
 
 
-def dispatch(call, directory):
-    """Only real FileTools functions; all paths constrained to fresh fixtures."""
-    from tools import FileTools
-    allowed = {s['function']['name'] for s in FileTools.tools.get_tools_list()}
+def dispatch(call, directory, tool_handle=None):
+    """Execute registered file tools with paths constrained to fresh fixtures."""
+    if tool_handle is None:
+        tool_handle = build_tools(math=False, web=False)
     try:
-        if call['name'] not in allowed:
+        if call['name'] not in AVAILABLE_FILE_TOOLS:
             raise ValueError("Nieznane narzędzie")
         args = json.loads(call['arguments'])
         if not isinstance(args, dict):
             raise ValueError("Argumenty muszą być obiektem JSON")
-        fn = getattr(FileTools, call['name'])
-        inspect.signature(fn).bind(**args)
         for key in ('path', 'source', 'destination'):
             if key in args:
                 path = Path(args[key])
@@ -52,9 +52,9 @@ def dispatch(call, directory):
                 if not path.is_relative_to(directory):
                     raise ValueError("Ścieżka poza katalogiem testowym")
                 args[key] = str(path)
-        return fn(**args)
+        return json.loads(tool_handle.execute_tool(call['name'], args))
     except (TypeError, ValueError) as error:
-        return {"success": False, "guard_blocked": True, "error": str(error)}
+        return {"success": False, "guard_blocked": True, "error": str(error), "result": None}
 
 
 def evaluate(case, result):
@@ -113,6 +113,9 @@ def run_case(handler, case, timeout=120, max_rounds=6):
     if '<' in case.get('prompt', ''):
         result.update(status='blocked', reason='Scenariusz zawiera niewypełnione symbole zastępcze.')
         return result
+    tool_handle = getattr(handler, 'ToolsHandle', None)
+    if tool_handle is None:
+        tool_handle = build_tools(math=False, web=False)
     started = None
     with tempfile.TemporaryDirectory(prefix='nlp-benchmark-') as tmp:
         directory = Path(tmp).resolve()
@@ -160,7 +163,7 @@ def run_case(handler, case, timeout=120, max_rounds=6):
                 messages.append({'role': 'assistant', 'content': text or None, 'tool_calls': [
                     {'id': c['id'], 'type': 'function', 'function': {'name': c['name'], 'arguments': c['arguments']}} for c in calls]})
                 for call in calls:
-                    output = dispatch(call, directory)
+                    output = dispatch(call, directory, tool_handle)
                     result['tool_results'].append({'call': call, 'result': output})
                     messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(output, ensure_ascii=False)})
             else:
@@ -195,12 +198,10 @@ def main():
     setup_error, handler = None, None
     try:
         from handlers.OllamaHandle import OllamaHandler
-        from tools.FileTools import register_tools
         from core import Logger
         Logger.VERBOSE = 0
-        handler = OllamaHandler(args.endpoint)
+        handler = OllamaHandler(args.endpoint, tool_handle=build_tools(math=False, web=False))
         handler.client = handler.client.with_options(timeout=args.timeout, max_retries=0)
-        register_tools(handler.ToolsHandle)
         if not handler.SetModel(args.model):
             raise RuntimeError('Wybrany model nie jest dostępny')
     except Exception as error:

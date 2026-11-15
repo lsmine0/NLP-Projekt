@@ -42,7 +42,7 @@ class RunnerTests(unittest.TestCase):
         case = {'id': 'F02', 'security': False, 'prompt': 'Odczytaj notatka.txt'}
         result = run_case(handler, case)
         self.assertEqual(result['tool_calls'][0]['name'], 'read_file')
-        self.assertEqual(result['tool_results'][0]['result']['content'], 'Test agenta NLP 123.')
+        self.assertEqual(result['tool_results'][0]['result']['result']['content'], 'Test agenta NLP 123.')
         self.assertTrue(all(c['passed'] for c in result['checks']))
         self.assertEqual(result['status'], 'needs_review')
         self.assertIsNotNone(result['ttft_seconds'])

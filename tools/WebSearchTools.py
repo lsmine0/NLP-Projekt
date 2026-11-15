@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from handlers.ToolHandle import ToolHandle
+from handlers.ToolHandle import ToolErrorText, ToolHandle
 
 
 # --- Stałe konfiguracyjne ---
@@ -53,13 +53,13 @@ def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
     :return: Sformatowana lista wyników (tytuł, URL, opis) lub komunikat błędu.
     """
     if not query or not str(query).strip():
-        return "Błąd: Zapytanie wyszukiwania nie może być puste."
+        return ToolErrorText("Błąd: Zapytanie wyszukiwania nie może być puste.")
     query = str(query).strip()
 
     try:
         max_results = int(max_results)
     except (TypeError, ValueError):
-        return f"Błąd: Parametr max_results musi być liczbą całkowitą (otrzymano: {max_results!r})."
+        return ToolErrorText(f"Błąd: Parametr max_results musi być liczbą całkowitą (otrzymano: {max_results!r}).")
     if max_results <= 0:
         max_results = DEFAULT_MAX_RESULTS
     max_results = min(max_results, MAX_RESULTS_LIMIT)
@@ -67,13 +67,13 @@ def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
     try:
         results = DDGS().text(query, max_results=max_results)
     except RatelimitException:
-        return "Błąd: Przekroczono limit zapytań do wyszukiwarki DuckDuckGo (rate limit). Spróbuj ponownie za chwilę."
+        return ToolErrorText("Błąd: Przekroczono limit zapytań do wyszukiwarki DuckDuckGo (rate limit). Spróbuj ponownie za chwilę.")
     except TimeoutException:
-        return "Błąd: Przekroczono czas oczekiwania na odpowiedź wyszukiwarki DuckDuckGo (timeout)."
+        return ToolErrorText("Błąd: Przekroczono czas oczekiwania na odpowiedź wyszukiwarki DuckDuckGo (timeout).")
     except DDGSException as e:
-        return f"Błąd wyszukiwarki DuckDuckGo: {e}"
+        return ToolErrorText(f"Błąd wyszukiwarki DuckDuckGo: {e}")
     except Exception as e:
-        return f"Nieoczekiwany błąd podczas wyszukiwania w sieci: {e}"
+        return ToolErrorText(f"Nieoczekiwany błąd podczas wyszukiwania w sieci: {e}")
 
     if not results:
         return f"Brak wyników wyszukiwania dla zapytania: '{query}'."
@@ -143,14 +143,14 @@ def fetch_webpage_content(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
     :return: Oczyszczony tekst ze strony lub czytelny komunikat błędu.
     """
     if not url or not str(url).strip().startswith(("http://", "https://")):
-        return "Błąd: Podano nieprawidłowy adres URL. Wymagany prefiks http:// lub https://."
+        return ToolErrorText("Błąd: Podano nieprawidłowy adres URL. Wymagany prefiks http:// lub https://.")
     url = str(url).strip()
 
     # Walidacja parametrów PRZED wykonaniem zapytania sieciowego
     try:
         max_chars = int(max_chars)
     except (TypeError, ValueError):
-        return f"Błąd: Parametr max_chars musi być liczbą całkowitą (otrzymano: {max_chars!r})."
+        return ToolErrorText(f"Błąd: Parametr max_chars musi być liczbą całkowitą (otrzymano: {max_chars!r}).")
     if max_chars <= 0:
         max_chars = DEFAULT_MAX_CHARS
 
@@ -168,7 +168,7 @@ def fetch_webpage_content(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
 
             content_type = response.headers.get("Content-Type", "").lower()
             if content_type and "html" not in content_type and "text/plain" not in content_type:
-                return (
+                return ToolErrorText(
                     f"Błąd: Strona {url} nie jest dokumentem HTML/tekstowym "
                     f"(Content-Type: {content_type}). Nie można wyodrębnić tekstu."
                 )
@@ -203,16 +203,16 @@ def fetch_webpage_content(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
         return f"Treść strony ({url}):\n\n{cleaned_text}"
 
     except requests.exceptions.Timeout:
-        return f"Błąd: Przekroczono czas oczekiwania (timeout {REQUEST_TIMEOUT}s) podczas łączenia z {url}."
+        return ToolErrorText(f"Błąd: Przekroczono czas oczekiwania (timeout {REQUEST_TIMEOUT}s) podczas łączenia z {url}.")
     except requests.exceptions.ConnectionError:
-        return f"Błąd: Brak połączenia z serwerem lub nie można rozwiązać nazwy hosta dla {url}."
+        return ToolErrorText(f"Błąd: Brak połączenia z serwerem lub nie można rozwiązać nazwy hosta dla {url}.")
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "nieznany"
-        return f"Błąd HTTP {status} podczas próby pobrania strony {url}."
+        return ToolErrorText(f"Błąd HTTP {status} podczas próby pobrania strony {url}.")
     except requests.exceptions.RequestException as e:
-        return f"Błąd zapytania HTTP podczas pobierania strony {url}: {e}"
+        return ToolErrorText(f"Błąd zapytania HTTP podczas pobierania strony {url}: {e}")
     except Exception as e:
-        return f"Nieoczekiwany błąd podczas pobierania treści strony {url}: {e}"
+        return ToolErrorText(f"Nieoczekiwany błąd podczas pobierania treści strony {url}: {e}")
 
 
 def register_web_search_tools(tool_handle: ToolHandle, overwrite: bool = True) -> None:
@@ -253,6 +253,9 @@ def register_web_search_tools(tool_handle: ToolHandle, overwrite: bool = True) -
         required=["url"],
         overwrite=overwrite,
     )
+
+    for name, function in AVAILABLE_WEB_TOOLS.items():
+        tool_handle.register_function(name, function)
 
 
 # Słownik pomocniczy do mapowania nazw narzędzi na funkcje wykonywalne w głównej pętli agenta

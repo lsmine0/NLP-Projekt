@@ -14,7 +14,6 @@ if str(ROOT_DIR) not in sys.path:
 from core import Logger
 from core.AgentAdapter import (
     AgentBase,
-    OllamaAgent,
     STTBase,
     TTSBase,
     create_agent,
@@ -24,9 +23,7 @@ from core.AgentAdapter import (
 from core.ChatStore import ChatStore, SettingsStore
 from handlers.OllamaHandle import OllamaHandler
 from handlers.ToolHandle import ToolHandle
-from tools.FileTools import register_tools as register_file_tools
-from tools.MathTools import register_math_tools
-from tools.WebSearchTools import register_web_search_tools
+from tools.ToolBuilder import build_tools
 
 
 class StartupError(RuntimeError):
@@ -247,8 +244,7 @@ def build_provider(
     if provider_norm == "openai" and api_key == "ollam":
         raise StartupError("Brak klucza API dla providera 'openai' (ustaw OPENAI_API_KEY).")
 
-    handler = OllamaHandler(base_url=endpoint, key=api_key)
-    handler.ToolsHandle = tool_handle
+    handler = OllamaHandler(base_url=endpoint, key=api_key, tool_handle=tool_handle)
 
     try:
         models = [m.id for m in handler.GetModels()]
@@ -307,12 +303,9 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
     )
     stt, tts = build_audio(no_audio=args.no_audio, settings=settings)
 
-    # Przekazanie wspólnego ToolHandle do ujednoliconego agenta
-    OllamaAgent.default_tool_handle = tool_handle
-
     def agent_factory(current_settings: dict | None = None) -> AgentBase:
         cfg = current_settings or settings_store.get()
-        return create_agent(cfg)
+        return create_agent(cfg, tool_handle=tool_handle)
 
     return AppRuntime(
         settings_store=settings_store,
