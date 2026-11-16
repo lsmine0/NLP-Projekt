@@ -176,15 +176,6 @@ def build_config(config_arg: str | None = None) -> tuple[SettingsStore, ChatStor
     return settings_store, chat_store
 
 
-# 2. ToolHandle
-def build_tools() -> ToolHandle:
-    tool_handle = ToolHandle()
-    register_file_tools(tool_handle)
-    register_math_tools(tool_handle, overwrite=True)
-    register_web_search_tools(tool_handle, overwrite=True)
-    return tool_handle
-
-
 # 2b. MCP (opcjonalne; brak pakietu lub konfiguracji nie blokuje aplikacji)
 def build_mcp(
     tool_handle: ToolHandle,
