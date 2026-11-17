@@ -130,8 +130,8 @@ _validate_syntax = validate_syntax
 @_handle_errors
 def edit_file(
     path: str,
-    target: str,
-    replacement: str,
+    target: str = "",
+    replacement: str = "",
     workspace_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Tworzy nowy plik kodu (gdy ``target=''``) lub edytuje unikalny fragment istniejącego pliku w ``workspace_dir``."""
@@ -339,7 +339,7 @@ def register_code_tools(
 ) -> None:
     """Rejestruje narzędzia kodowania w ``ToolHandle`` z polityką kontrolowaną po stronie hosta."""
 
-    def _edit_file_tool(path: str, target: str, replacement: str) -> dict[str, Any]:
+    def _edit_file_tool(path: str, target: str = "", replacement: str = "") -> dict[str, Any]:
         return edit_file(path, target, replacement, workspace_dir=workspace_dir)
 
     def _run_python_tool(
@@ -353,20 +353,19 @@ def register_code_tools(
     tool_handle.create_tool(
         name="edit_file",
         description=(
-            "Primary tool for creating new code files (pass empty target='' and full code in replacement) "
-            "or editing a unique target fragment inside an existing UTF-8 file within the workspace directory. "
-            "Automatically validates syntax for .py, .json, .c, and .cpp files before saving. "
-            "Always prefer edit_file over write_file for source code files."
+            "Edits a unique target fragment inside an existing UTF-8 file within the workspace directory "
+            "(or creates the file if target is empty). Validates syntax for .py, .json, .c, and .cpp files. "
+            "Prefer edit_file when modifying existing files."
         ),
         properties={
             "path": {"type": "string", "description": "Path to the file within the workspace directory."},
             "target": {
                 "type": "string",
-                "description": "Exact existing text fragment to replace (must occur uniquely), or '' (empty string) to create a new file.",
+                "description": "Exact existing text fragment to replace (must occur uniquely), or omit / '' to create a new file.",
             },
             "replacement": {"type": "string", "description": "New text fragment, or full file content when creating a new file."},
         },
-        required=["path", "target", "replacement"],
+        required=["path", "replacement"],
         function=_edit_file_tool,
     )
     tool_handle.create_tool(

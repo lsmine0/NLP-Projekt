@@ -319,10 +319,10 @@ def register_tools(tool_handle: ToolHandle) -> None:
         {
             "name": "create_file",
             "description": (
-                "Creates a new UTF-8 plain text file. "
+                "Creates a new UTF-8 text file. "
                 "Fails if the path already exists. "
                 "The parent directory must exist. "
-                "For creating or editing source code files, prefer edit_file."
+                "Prefer edit_file when modifying an existing file."
             ),
             "properties": {
                 "path": path_property,
@@ -339,9 +339,10 @@ def register_tools(tool_handle: ToolHandle) -> None:
         {
             "name": "write_file",
             "description": (
-                "Replaces a plain text file's entire content with UTF-8 text or creates a new file. "
+                "Replaces a file's entire content with UTF-8 text. "
+                "Creates the file if it does not exist. "
                 "The parent directory must exist. "
-                "Always prefer edit_file when creating or modifying source code files."
+                "Prefer edit_file when modifying an existing file."
             ),
             "properties": {
                 "path": path_property,

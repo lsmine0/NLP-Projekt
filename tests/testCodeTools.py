@@ -323,6 +323,16 @@ class CodeToolsTests(unittest.TestCase):
         assert edit_tool is not None
         edit_props = edit_tool["function"]["parameters"]["properties"]
         self.assertNotIn("workspace_dir", edit_props)
+        self.assertEqual(edit_tool["function"]["parameters"]["required"], ["path", "replacement"])
+
+        create_via_edit = json.loads(
+            handle.execute_tool(
+                "edit_file",
+                {"path": "via_tool.py", "replacement": "X = 42\n"},
+            )
+        )
+        self.assertTrue(create_via_edit["success"])
+        self.assertEqual((self.workspace / "via_tool.py").read_text(encoding="utf-8"), "X = 42\n")
 
         run_tool = handle.get_tool("run_python")
         self.assertIsNotNone(run_tool)
