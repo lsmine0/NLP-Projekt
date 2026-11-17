@@ -1,35 +1,10 @@
-from functools import wraps
 from pathlib import Path
 from handlers.ToolHandle import ToolHandle
 from datetime import date, datetime, time, timezone
 from fnmatch import fnmatchcase
 from stat import S_ISDIR, S_ISREG
 import shutil
-
-# Wrapper zwracający słownik z kluczem "success" i ewentualnym komunikatem o błędzie.
-def _handle_errors(function):
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-        try:
-            return function(*args, **kwargs)
-        except FileNotFoundError as error:
-            message = f"File or directory not found: {error.filename or error}"
-        except FileExistsError as error:
-            message = f"File or directory already exists: {error.filename or error}"
-        except PermissionError as error:
-            message = f"Permission denied: {error.filename or error}"
-        except IsADirectoryError as error:
-            message = f"Expected a file, but the path is a directory: {error.filename or error}"
-        except NotADirectoryError as error:
-            message = f"Expected a directory, but the path is not a directory: {error.filename or error}"
-        except UnicodeError:
-            message = "Cannot read or write the file as UTF-8 text."
-        except (OSError, ValueError, shutil.Error) as error:
-            message = f"Operation failed: {error}"
-
-        return {"success": False, "error": message}
-
-    return wrapper
+from tools.ToolUtils import handle_errors as _handle_errors
 
 
 @_handle_errors

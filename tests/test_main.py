@@ -70,7 +70,7 @@ def test_build_config_file_and_inline_updates(
 def test_main_build_tools_registers_all_tools() -> None:
     tools = app_main.build_tools()
     assert isinstance(tools, ToolHandle)
-    assert len(tools.get_tools_list()) == 16
+    assert len(tools.get_tools_list()) == 18
 
 
 def test_build_provider_startup_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,10 +183,12 @@ def test_put_settings_updates_system_prompt_and_rejects_non_text(
 
     try:
         updated = WebGui.put_settings({"system_prompt": "Instrukcje użytkownika"})
+        assert isinstance(updated, dict)
         assert updated["system_prompt"] == "Instrukcje użytkownika"
         assert WebGui.sessions == {}
 
         invalid = WebGui.put_settings({"system_prompt": ["nie", "tekst"]})
+        assert not isinstance(invalid, dict)
         assert invalid.status_code == 400
     finally:
         WebGui.sessions.clear()
