@@ -261,6 +261,7 @@ def start_gui(
             width=1000,
             height=720,
             min_size=(650, 500),
+            text_select=True,
         )
         webview.start()
     finally:
