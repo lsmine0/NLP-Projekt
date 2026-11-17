@@ -489,6 +489,48 @@ class CodeToolsTests(unittest.TestCase):
         self.assertEqual(mock_ok.call_count, 2)
         self.assertEqual(mock_ok.call_args_list[0].args[0][0], "g++")
 
+    def test_edit_file_validates_cpp_syntax_with_fallback(self) -> None:
+        cpp_file = self.workspace / "main.cpp"
+        original = "int main() { return 0; }\n"
+        cpp_file.write_text(original, encoding="utf-8")
+
+        # Brak kompilatora g++ w systemie -> edycja zapisuje się normalnie bez błędu.
+        with patch("tools.CodeTools.shutil.which", return_value=None):
+            no_compiler = edit_file(
+                "main.cpp",
+                "return 0;",
+                "return 1;",
+                workspace_dir=self.workspace,
+            )
+        self.assertTrue(no_compiler["success"])
+        self.assertIn("return 1;", cpp_file.read_text(encoding="utf-8"))
+
+        # Gdy g++ jest dostępny i wykryje błąd składni -> plik nie zostaje nadpisany.
+        syntax_fail = subprocess.CompletedProcess(
+            args=["g++"],
+            returncode=1,
+            stdout="",
+            stderr="<stdin>:1:24: error: expected ';' before '}' token\n",
+        )
+        with (
+            patch("tools.CodeTools.shutil.which", return_value="C:/msys64/mingw64/bin/g++.exe"),
+            patch("tools.CodeTools.subprocess.run", return_value=syntax_fail) as mock_run,
+        ):
+            bad_cpp = edit_file(
+                "main.cpp",
+                "return 1;",
+                "return 1",
+                workspace_dir=self.workspace,
+            )
+        self.assertFalse(bad_cpp["success"])
+        self.assertIn("SyntaxError", bad_cpp["error"])
+        self.assertIn("expected ';'", bad_cpp["error"])
+        self.assertIn("return 1;", cpp_file.read_text(encoding="utf-8"))
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["g++", "-fsyntax-only", "-x", "c++", "-"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,15 @@ COMPILED_LANGUAGES: dict[str, tuple[str, str]] = {
 }
 
 
+_C_SYNTAX_CHECKERS: dict[str, tuple[str, str]] = {
+    ".c": ("gcc", "c"),
+    ".cpp": ("g++", "c++"),
+    ".cc": ("g++", "c++"),
+    ".cxx": ("g++", "c++"),
+    ".hpp": ("g++", "c++"),
+}
+
+
 def _validate_syntax(file_path: Path, content: str) -> None:
     suffix = file_path.suffix.lower()
     if suffix == ".py":
@@ -136,6 +145,28 @@ def _validate_syntax(file_path: Path, content: str) -> None:
             raise SyntaxError(
                 error.msg, (str(file_path), error.lineno, error.colno, None)
             ) from error
+    elif suffix in _C_SYNTAX_CHECKERS:
+        compiler, lang_flag = _C_SYNTAX_CHECKERS[suffix]
+        if shutil.which(compiler) is None:
+            return
+        try:
+            proc = subprocess.run(
+                [compiler, "-fsyntax-only", "-x", lang_flag, "-"],
+                input=content,
+                cwd=str(file_path.parent),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5.0,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return
+        if proc.returncode != 0:
+            raise SyntaxError(
+                proc.stderr.strip() or f"{compiler} syntax check failed.",
+                (str(file_path), None, None, None),
+            )
 
 
 @_handle_errors
