@@ -8,8 +8,6 @@ wymaga jawnej zgody użytkownika po stronie hosta.
 
 from __future__ import annotations
 
-import ast
-import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,7 +17,8 @@ from typing import Any, Callable
 
 from core import Logger
 from handlers.ToolHandle import ToolHandle
-from tools.ToolUtils import handle_errors as _handle_errors
+from tools.FileTools import write_file
+from tools.ToolUtils import handle_errors as _handle_errors, validate_syntax
 
 DEFAULT_TIMEOUT: float = 10.0
 MAX_TIMEOUT: float = 60.0
@@ -125,48 +124,7 @@ COMPILED_LANGUAGES: dict[str, tuple[str, str]] = {
 }
 
 
-_C_SYNTAX_CHECKERS: dict[str, tuple[str, str]] = {
-    ".c": ("gcc", "c"),
-    ".cpp": ("g++", "c++"),
-    ".cc": ("g++", "c++"),
-    ".cxx": ("g++", "c++"),
-    ".hpp": ("g++", "c++"),
-}
-
-
-def _validate_syntax(file_path: Path, content: str) -> None:
-    suffix = file_path.suffix.lower()
-    if suffix == ".py":
-        ast.parse(content, filename=str(file_path))
-    elif suffix == ".json":
-        try:
-            json.loads(content)
-        except json.JSONDecodeError as error:
-            raise SyntaxError(
-                error.msg, (str(file_path), error.lineno, error.colno, None)
-            ) from error
-    elif suffix in _C_SYNTAX_CHECKERS:
-        compiler, lang_flag = _C_SYNTAX_CHECKERS[suffix]
-        if shutil.which(compiler) is None:
-            return
-        try:
-            proc = subprocess.run(
-                [compiler, "-fsyntax-only", "-x", lang_flag, "-"],
-                input=content,
-                cwd=str(file_path.parent),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5.0,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return
-        if proc.returncode != 0:
-            raise SyntaxError(
-                proc.stderr.strip() or f"{compiler} syntax check failed.",
-                (str(file_path), None, None, None),
-            )
+_validate_syntax = validate_syntax
 
 
 @_handle_errors
@@ -176,18 +134,30 @@ def edit_file(
     replacement: str,
     workspace_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Edytuje unikalny fragment pliku tekstowego w ``workspace_dir`` (CRLF/LF oraz walidacja składni ``.py`` i ``.json``)."""
+    """Tworzy nowy plik kodu (gdy ``target=''``) lub edytuje unikalny fragment istniejącego pliku w ``workspace_dir``."""
     if not isinstance(target, str) or not isinstance(replacement, str):
         return {"success": False, "error": "Target and replacement must be strings."}
-    if not target:
-        return {"success": False, "error": "Target fragment cannot be empty."}
 
     file_path = _resolve_workspace_path(path, workspace_dir)
 
     if not file_path.exists():
+        if not target:
+            validate_syntax(file_path, replacement)
+            write_res = write_file(str(file_path), replacement)
+            if not write_res.get("success"):
+                return write_res
+            return {
+                "success": True,
+                "message": "File created and validated successfully.",
+                "path": str(file_path),
+                "created": True,
+                "replacements": 1,
+            }
         raise FileNotFoundError(str(file_path))
     if file_path.is_dir():
         raise IsADirectoryError(str(file_path))
+    if not target:
+        return {"success": False, "error": "Target fragment cannot be empty when editing an existing file."}
 
     raw_content = file_path.read_bytes().decode("utf-8")
     uses_crlf = "\r\n" in raw_content
@@ -383,13 +353,18 @@ def register_code_tools(
     tool_handle.create_tool(
         name="edit_file",
         description=(
-            "Edits a unique target fragment inside an existing UTF-8 text file (any language) "
-            "within the workspace directory. Fails if target occurs 0 or >1 times, or on .py/.json syntax error."
+            "Primary tool for creating new code files (pass empty target='' and full code in replacement) "
+            "or editing a unique target fragment inside an existing UTF-8 file within the workspace directory. "
+            "Automatically validates syntax for .py, .json, .c, and .cpp files before saving. "
+            "Always prefer edit_file over write_file for source code files."
         ),
         properties={
             "path": {"type": "string", "description": "Path to the file within the workspace directory."},
-            "target": {"type": "string", "description": "Exact existing text fragment to replace (must occur uniquely)."},
-            "replacement": {"type": "string", "description": "New text fragment that replaces the target."},
+            "target": {
+                "type": "string",
+                "description": "Exact existing text fragment to replace (must occur uniquely), or '' (empty string) to create a new file.",
+            },
+            "replacement": {"type": "string", "description": "New text fragment, or full file content when creating a new file."},
         },
         required=["path", "target", "replacement"],
         function=_edit_file_tool,

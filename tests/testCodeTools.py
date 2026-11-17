@@ -23,6 +23,7 @@ from tools.FileTools import (
     list_directory,
     read_file,
     search_in_files,
+    write_file,
 )
 from tools.ToolBuilder import build_tools
 
@@ -530,6 +531,37 @@ class CodeToolsTests(unittest.TestCase):
             mock_run.call_args.args[0],
             ["g++", "-fsyntax-only", "-x", "c++", "-"],
         )
+
+    def test_edit_file_creates_new_code_file_with_validation_and_write_file(self) -> None:
+        new_py = self.workspace / "new_algo.py"
+
+        bad_py = edit_file(
+            "new_algo.py",
+            "",
+            "def f(:\n    return 1\n",
+            workspace_dir=self.workspace,
+        )
+        self.assertFalse(bad_py["success"])
+        self.assertIn("SyntaxError", bad_py["error"])
+        self.assertFalse(new_py.exists())
+
+        with patch("tools.CodeTools.write_file", wraps=write_file) as spy_write:
+            created = edit_file(
+                "new_algo.py",
+                "",
+                "def f():\n    return 1\n",
+                workspace_dir=self.workspace,
+            )
+        self.assertTrue(created["success"])
+        self.assertTrue(created["created"])
+        spy_write.assert_called_once_with(str(new_py), "def f():\n    return 1\n")
+        self.assertEqual(new_py.read_text(encoding="utf-8"), "def f():\n    return 1\n")
+
+        # Bezpośrednie write_file z FileTools również waliduje składnię kodu.
+        direct_bad = write_file(str(self.workspace / "bad_direct.py"), "def broken(:\n")
+        self.assertFalse(direct_bad["success"])
+        self.assertIn("SyntaxError", direct_bad["error"])
+        self.assertFalse((self.workspace / "bad_direct.py").exists())
 
 
 if __name__ == "__main__":

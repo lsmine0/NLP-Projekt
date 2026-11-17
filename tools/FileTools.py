@@ -4,12 +4,14 @@ from datetime import date, datetime, time, timezone
 from fnmatch import fnmatchcase
 from stat import S_ISDIR, S_ISREG
 import shutil
-from tools.ToolUtils import handle_errors as _handle_errors
+from tools.ToolUtils import handle_errors as _handle_errors, validate_syntax
 
 
 @_handle_errors
 def create_file(path: str, content: str = ""):
     file_path = Path(path)
+    if content:
+        validate_syntax(file_path, content)
 
     # Tryb "x" tworzy nowy plik i nie nadpisuje istniejącego.
     with file_path.open("x", encoding="utf-8") as file:
@@ -36,6 +38,7 @@ def read_file(path: str):
 @_handle_errors
 def write_file(path: str, content: str):
     file_path = Path(path)
+    validate_syntax(file_path, content)
 
     # Zastępuje zawartość albo tworzy plik, jeśli go nie ma.
     file_path.write_text(content, encoding="utf-8")
@@ -316,9 +319,10 @@ def register_tools(tool_handle: ToolHandle) -> None:
         {
             "name": "create_file",
             "description": (
-                "Creates a new UTF-8 text file. "
+                "Creates a new UTF-8 plain text file. "
                 "Fails if the path already exists. "
-                "The parent directory must exist."
+                "The parent directory must exist. "
+                "For creating or editing source code files, prefer edit_file."
             ),
             "properties": {
                 "path": path_property,
@@ -335,9 +339,9 @@ def register_tools(tool_handle: ToolHandle) -> None:
         {
             "name": "write_file",
             "description": (
-                "Replaces a file's entire content with UTF-8 text. "
-                "Creates the file if it does not exist. "
-                "The parent directory must exist."
+                "Replaces a plain text file's entire content with UTF-8 text or creates a new file. "
+                "The parent directory must exist. "
+                "Always prefer edit_file when creating or modifying source code files."
             ),
             "properties": {
                 "path": path_property,
