@@ -172,5 +172,25 @@ def test_webgui_exposes_start_gui_without_side_effects_on_import() -> None:
     assert WebGui.app is not None
 
 
+def test_put_settings_updates_system_prompt_and_rejects_non_text(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_store = chat_store_module.SettingsStore(tmp_path / "settings.json")
+    chat_store = chat_store_module.ChatStore(directory=tmp_path / "chats")
+    monkeypatch.setattr(WebGui, "settings_store", settings_store)
+    monkeypatch.setattr(WebGui, "store", chat_store)
+    WebGui.sessions["existing"] = object()  # type: ignore[assignment]
+
+    try:
+        updated = WebGui.put_settings({"system_prompt": "Instrukcje użytkownika"})
+        assert updated["system_prompt"] == "Instrukcje użytkownika"
+        assert WebGui.sessions == {}
+
+        invalid = WebGui.put_settings({"system_prompt": ["nie", "tekst"]})
+        assert invalid.status_code == 400
+    finally:
+        WebGui.sessions.clear()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

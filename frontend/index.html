@@ -621,6 +621,17 @@
             border: 1px solid var(--border-color);
             border-radius: 7px;
         }
+        #settings textarea {
+            width: 100%;
+            min-height: 150px;
+            padding: 8px 10px;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 7px;
+            resize: vertical;
+            font: inherit;
+        }
         #settings .inline { display: flex; gap: 8px; }
         #settings .check { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
         .secondary, .primary {
@@ -755,6 +766,12 @@
                         <i class="ph ph-arrows-clockwise"></i> Odśwież
                     </button>
                 </div>
+            </label>
+            <label class="field">
+                <span>System prompt</span>
+                <textarea id="system-prompt" rows="7"
+                    aria-label="Edytowalna część promptu systemowego"></textarea>
+                <small>Stałe zasady używania narzędzi są dołączane automatycznie i nie można ich tu zmienić.</small>
             </label>
 
             <h3>Przechowywanie czatów</h3>
@@ -1382,6 +1399,7 @@
         function fillSettingsForm() {
             const audioOff = settings.audio_enabled === false;
             $("ollama-endpoint").value = settings.ollama_endpoint ?? "";
+            $("system-prompt").value = settings.system_prompt ?? "";
             $("max-chats").value = settings.max_chats ?? 0;
             $("max-age-days").value = settings.max_age_days ?? 0;
             $("tts-enabled").checked = !audioOff && Boolean(settings.tts_enabled);
@@ -1459,6 +1477,7 @@
                     body: JSON.stringify({
                         ollama_endpoint: $("ollama-endpoint").value.trim(),
                         ollama_model: $("ollama-model").value,
+                        system_prompt: $("system-prompt").value,
                         max_chats: Math.max(0, parseInt($("max-chats").value, 10) || 0),
                         max_age_days: Math.max(0, parseInt($("max-age-days").value, 10) || 0),
                         tts_enabled: $("tts-enabled").checked,

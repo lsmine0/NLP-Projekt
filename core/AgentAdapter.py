@@ -10,6 +10,7 @@ from handlers.OllamaHandle import OllamaHandler
 from handlers.ToolHandle import ToolHandle
 from handlers.STTHandle import STTHandle
 from handlers.TTSHandle import SoundDeviceSink, TTSHandle
+from core.PromptBuilder import build_system_prompt, build_tool_prompt
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
@@ -202,8 +203,16 @@ def _missing_audio_dependencies(*modules: str) -> list[str]:
 
 # Funkcje tworzące instancje (miejsce podpięcia AgentLoop, STTHandle, TTSHandle)
 def create_agent(settings: dict, *, tool_handle: ToolHandle | None = None) -> AgentBase:
+    tool_prompt = build_tool_prompt(tool_handle, settings)
+    system_prompt = build_system_prompt(
+        settings.get("system_prompt"), tool_prompt, settings
+    )
+    Logger.printInfo(f"Finalny prompt systemowy:\n{system_prompt}")
     return OllamaAgent(
-        settings["ollama_endpoint"], settings["ollama_model"], tool_handle=tool_handle
+        settings["ollama_endpoint"],
+        settings["ollama_model"],
+        system_prompt=system_prompt,
+        tool_handle=tool_handle,
     )
 
 
