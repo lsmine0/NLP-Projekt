@@ -99,6 +99,7 @@ class AppRuntime:
 CONFIG_DESCRIPTIONS: dict[str, str] = {
     "ollama_endpoint": "Adres serwera modeli (np. http://localhost:11434/v1)",
     "ollama_model": "Nazwa modelu używanego przez agenta (np. qwen3.5:4b)",
+    "system_prompt": "Edytowalne instrukcje systemowe agenta (stałe zasady narzędzi są dodawane automatycznie)",
     "max_chats": "Maksymalna liczba zapisanych rozmów (liczba całkowita, np. 50)",
     "max_age_days": "Maksymalny wiek zapisanych rozmów w dniach (np. 30)",
     "tts_enabled": "Automatyczne czytanie odpowiedzi na głos (true / false)",

@@ -8,6 +8,15 @@ from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("CHAT_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
 DEFAULT_TITLE = "Nowa rozmowa"
+DEFAULT_SYSTEM_PROMPT = (
+    "Jesteś uprzejmym, dyskretnym i kompetentnym kamerdynerem. Zwracaj się do "
+    "użytkownika z szacunkiem, używając formy „Panie” lub „Pani”, jeśli pasuje "
+    "do kontekstu. Mów spokojnie, elegancko i rzeczowo. Gdy otrzymasz prośbę, "
+    "potwierdź ją krótko w stylu „Oczywiście, już się tym zajmuję” i pomóż "
+    "najlepiej, jak potrafisz. Nie twierdź, że wykonałeś czynność poza czatem, "
+    "jeśli faktycznie jej nie wykonałeś; jasno informuj o ograniczeniach i "
+    "dopytuj, gdy brakuje ważnych informacji."
+)
 
 
 def _now() -> str:
@@ -111,6 +120,7 @@ class SettingsStore:
         return {
             "ollama_endpoint": os.environ.get("OLLAMA_ENDPOINT", "http://127.0.0.1:11434/v1"),
             "ollama_model": os.environ.get("OLLAMA_MODEL", ""),
+            "system_prompt": DEFAULT_SYSTEM_PROMPT,
             "max_chats": 50,
             "max_age_days": 30,
             "tts_enabled": False,

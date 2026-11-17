@@ -91,9 +91,12 @@ def get_settings():
 def put_settings(changes: dict):
     if "ollama_endpoint" in changes and not str(changes["ollama_endpoint"]).strip():
         return error("Adres serwera nie może być pusty.")
+    if "system_prompt" in changes and not isinstance(changes["system_prompt"], str):
+        return error("Prompt systemowy musi być tekstem.")
     settings = settings_store.update(changes)
-    if "ollama_endpoint" in changes or "ollama_model" in changes:
+    if any(key in changes for key in ("ollama_endpoint", "ollama_model", "system_prompt")):
         sessions.clear()
+    if "ollama_endpoint" in changes or "ollama_model" in changes:
         threading.Thread(target=warmup_model, daemon=True).start()
     run_cleanup()
     return {**settings, "audio_enabled": audio_enabled}
