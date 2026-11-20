@@ -1,40 +1,17 @@
-from functools import wraps
 from pathlib import Path
 from handlers.ToolHandle import ToolHandle
 from datetime import date, datetime, time, timezone
 from fnmatch import fnmatchcase
 from stat import S_ISDIR, S_ISREG
 import shutil
-
-# Wrapper zwracający słownik z kluczem "success" i ewentualnym komunikatem o błędzie.
-def _handle_errors(function):
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-        try:
-            return function(*args, **kwargs)
-        except FileNotFoundError as error:
-            message = f"File or directory not found: {error.filename or error}"
-        except FileExistsError as error:
-            message = f"File or directory already exists: {error.filename or error}"
-        except PermissionError as error:
-            message = f"Permission denied: {error.filename or error}"
-        except IsADirectoryError as error:
-            message = f"Expected a file, but the path is a directory: {error.filename or error}"
-        except NotADirectoryError as error:
-            message = f"Expected a directory, but the path is not a directory: {error.filename or error}"
-        except UnicodeError:
-            message = "Cannot read or write the file as UTF-8 text."
-        except (OSError, ValueError, shutil.Error) as error:
-            message = f"Operation failed: {error}"
-
-        return {"success": False, "error": message}
-
-    return wrapper
+from tools.ToolUtils import handle_errors as _handle_errors, validate_syntax
 
 
 @_handle_errors
 def create_file(path: str, content: str = ""):
     file_path = Path(path)
+    if content:
+        validate_syntax(file_path, content)
 
     # Tryb "x" tworzy nowy plik i nie nadpisuje istniejącego.
     with file_path.open("x", encoding="utf-8") as file:
@@ -61,6 +38,7 @@ def read_file(path: str):
 @_handle_errors
 def write_file(path: str, content: str):
     file_path = Path(path)
+    validate_syntax(file_path, content)
 
     # Zastępuje zawartość albo tworzy plik, jeśli go nie ma.
     file_path.write_text(content, encoding="utf-8")
@@ -343,7 +321,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
             "description": (
                 "Creates a new UTF-8 text file. "
                 "Fails if the path already exists. "
-                "The parent directory must exist."
+                "The parent directory must exist. "
+                "Prefer edit_file when modifying an existing file."
             ),
             "properties": {
                 "path": path_property,
@@ -362,7 +341,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
             "description": (
                 "Replaces a file's entire content with UTF-8 text. "
                 "Creates the file if it does not exist. "
-                "The parent directory must exist."
+                "The parent directory must exist. "
+                "Prefer edit_file when modifying an existing file."
             ),
             "properties": {
                 "path": path_property,

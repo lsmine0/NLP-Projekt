@@ -77,8 +77,8 @@ def test_web_tools():
 
 
 def test_builder_and_shared_registry():
-    assert build_tools(files=False, math=False, web=False).get_tools_list() == []
-    assert len(build_tools().get_tools_list()) == 16
+    assert build_tools(files=False, math=False, web=False, code=False).get_tools_list() == []
+    assert len(build_tools().get_tools_list()) == 18
     tools = build_tools(files=False, web=False)
     flow = AgentFlow(tool_handle=tools)
     assert flow.ollama.ToolsHandle is flow.tools is tools
@@ -118,7 +118,11 @@ def test_ollama_reads_notatka(tmp_path, monkeypatch, stream):
         prompt = "odczytaj notatka.txt"
         if stream:
             events = flow.RunStream(prompt, as_events=True)
-            answer = "".join(event["text"] for event in events if event["type"] == "token")
+            answer = "".join(
+                event["text"]
+                for event in events
+                if isinstance(event, dict) and event.get("type") == "token"
+            )
         else:
             answer = flow.Run(prompt)
 

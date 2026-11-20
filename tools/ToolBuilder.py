@@ -1,7 +1,13 @@
 from handlers.ToolHandle import ToolHandle
 
 
-def build_tools(*, files: bool = True, math: bool = True, web: bool = True) -> ToolHandle:
+def build_tools(
+    *,
+    files: bool = True,
+    math: bool = True,
+    web: bool = True,
+    code: bool = True,
+) -> ToolHandle:
     """Zbuduj rejestr z wybranymi grupami narzędzi."""
     tool_handle = ToolHandle()
     if files:
@@ -16,4 +22,8 @@ def build_tools(*, files: bool = True, math: bool = True, web: bool = True) -> T
         from tools.WebSearchTools import register_web_search_tools
 
         register_web_search_tools(tool_handle)
+    if code:
+        from tools.CodeTools import register_code_tools
+
+        register_code_tools(tool_handle)
     return tool_handle
