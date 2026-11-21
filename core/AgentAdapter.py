@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 from core import Logger
 from core.AgentFlow import AgentFlow
 from handlers.ContextHandle import ContextHandle
-from handlers.OllamaHandle import OllamaHandler
+from core.ModelProvider import ModelProvider
 from handlers.ToolHandle import ToolHandle
 from handlers.STTHandle import STTHandle
 from handlers.TTSHandle import SoundDeviceSink, TTSHandle
@@ -56,6 +56,7 @@ class OllamaAgent(AgentBase):
         system_prompt: str | None = None,
         tool_handle: ToolHandle | None = None,
         api_key: str | None = None,
+        provider: ModelProvider | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -71,8 +72,9 @@ class OllamaAgent(AgentBase):
             key=self.api_key,
             system_prompt=self.system_prompt,
             tool_handle=self.tool_handle,
+            provider=provider,
         )
-        self.handler: OllamaHandler = self.flow.ollama
+        self.handler: ModelProvider = self.flow.ollama
         self.history: list[dict] = self.flow.context
 
     def reset(self) -> None:
@@ -96,7 +98,7 @@ class OllamaAgent(AgentBase):
         )
         self.history = self.flow.context
 
-    def _get_handler(self) -> OllamaHandler:
+    def _get_handler(self) -> ModelProvider:
         if not self.handler.model or (self.model and self.handler.model != self.model):
             names = [model.id for model in self.handler.GetModels()]
             target = self.model or (names[0] if names else "")
@@ -116,8 +118,8 @@ class OllamaAgent(AgentBase):
         try:
             self._get_handler()
         except Exception as error:
-            Logger.printError(f"Ollama: {error}")
-            yield {"type": "error", "message": f"Nie można połączyć z modelem ({self.endpoint}): {error}"}
+            Logger.printError("Provider modelu zgłosił błąd.")
+            yield {"type": "error", "message": "Nie można połączyć z modelem."}
             return
 
         snapshot = list(self.flow.context)
@@ -127,8 +129,8 @@ class OllamaAgent(AgentBase):
                     yield event
         except Exception as error:
             self.flow.context[:] = snapshot
-            Logger.printError(f"Ollama: {error}")
-            yield {"type": "error", "message": f"Błąd modelu: {error}"}
+            Logger.printError("Provider modelu zgłosił błąd.")
+            yield {"type": "error", "message": "Błąd modelu."}
         finally:
             self.history = self.flow.context
 
@@ -214,7 +216,7 @@ def _missing_audio_dependencies(*modules: str) -> list[str]:
 
 
 # Funkcje tworzące instancje (miejsce podpięcia AgentLoop, STTHandle, TTSHandle)
-def create_agent(settings: dict, *, tool_handle: ToolHandle | None = None) -> AgentBase:
+def create_agent(settings: dict, *, tool_handle: ToolHandle | None = None, provider: ModelProvider | None = None) -> AgentBase:
     tool_prompt = build_tool_prompt(tool_handle, settings)
     system_prompt = build_system_prompt(
         settings.get("system_prompt"), tool_prompt, settings
@@ -225,6 +227,7 @@ def create_agent(settings: dict, *, tool_handle: ToolHandle | None = None) -> Ag
         settings["ollama_model"],
         system_prompt=system_prompt,
         tool_handle=tool_handle,
+        **({"provider": provider} if provider is not None else {}),
     )
 
 

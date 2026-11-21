@@ -1,0 +1,12 @@
+# Backend headless: bez pywebview, STT/TTS i MCP.
+fastapi>=0.110,<1
+uvicorn>=0.28,<1
+python-multipart>=0.0.9
+pydantic>=2.6,<3
+requests>=2.31,<3
+openai>=1.14,<4
+colorama>=0.4.6,<1
+Pillow>=10
+sympy>=1.12
+beautifulsoup4>=4.12
+ddgs>=7
