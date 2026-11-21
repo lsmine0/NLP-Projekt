@@ -26,6 +26,7 @@ from core.ChatStore import DATA_DIR
 # Jedno źródło limitów - używane przy uploadzie (#52) i przed wysłaniem do modelu (#51)
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 40_000_000
+MAX_PER_MESSAGE = 4
 ALLOWED_FORMATS: dict[str, tuple[str, str]] = {
     # format Pillow -> (MIME, rozszerzenie pliku); SVG celowo pominięte (może zawierać skrypty)
     "PNG": ("image/png", "png"),
