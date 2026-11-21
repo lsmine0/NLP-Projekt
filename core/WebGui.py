@@ -10,11 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import uvicorn
 import webview
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 
 from core import Logger
+from core import Attachments
+from core.Attachments import Attachment, AttachmentError, AttachmentStore
 from core.AgentAdapter import AgentBase, STTBase, TTSBase, create_agent, create_stt, create_tts
 from core.ChatStore import ChatStore, SettingsStore
 from handlers.OllamaHandle import OllamaHandler
@@ -30,6 +32,7 @@ store: ChatStore = None  # type: ignore[assignment]
 settings_store: SettingsStore = None  # type: ignore[assignment]
 stt: STTBase = None  # type: ignore[assignment]
 tts: TTSBase = None  # type: ignore[assignment]
+attachment_store: AttachmentStore = None  # type: ignore[assignment]
 agent_factory: Callable[[dict], AgentBase] = create_agent
 audio_enabled: bool = True
 sessions: dict[str, AgentBase] = {}
@@ -37,21 +40,56 @@ sessions: dict[str, AgentBase] = {}
 
 class ChatRequest(BaseModel):
     chat_id: str | None = None
-    message: str
+    message: str = ""
+    attachments: list[str] = Field(default_factory=list)  # ID z POST /api/attachments
 
 
 class SpeakRequest(BaseModel):
     text: str
 
 
-def error(message: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"error": message}, status_code=status)
+def error(message: str, status: int = 400, code: str | None = None) -> JSONResponse:
+    body = {"error": message}
+    if code:
+        body["code"] = code
+    return JSONResponse(body, status_code=status)
+
+
+# Kody AttachmentError -> status HTTP (GUI rozróżnia błędy po polu "code")
+_ATTACHMENT_STATUS = {"empty": 400, "bad_format": 415, "too_large": 413, "not_found": 404}
+
+
+def attachment_error(exc: AttachmentError) -> JSONResponse:
+    return error(str(exc), _ATTACHMENT_STATUS.get(exc.code, 400), exc.code)
+
+
+def public_attachment(attachment: Attachment) -> dict:
+    return {
+        key: value for key, value in attachment.to_dict().items()
+        if key in ("id", "mime", "size", "width", "height", "name")
+    }
+
+
+def public_settings(settings: dict) -> dict:
+    return {
+        **settings,
+        "audio_enabled": audio_enabled,
+        # te same limity co walidacja na backendzie - frontend nie trzyma własnych
+        "attachment_limits": {
+            "max_bytes": Attachments.MAX_BYTES,
+            "max_pixels": Attachments.MAX_PIXELS,
+            "max_per_message": Attachments.MAX_PER_MESSAGE,
+            "mime_types": [mime for mime, _ in Attachments.ALLOWED_FORMATS.values()],
+        },
+    }
 
 
 def run_cleanup() -> None:
     cfg = settings_store.get()
     for chat_id in store.cleanup(cfg["max_chats"], cfg["max_age_days"]):
         sessions.pop(chat_id, None)
+        attachment_store.delete_for_chat(chat_id)
+    attachment_store.cleanup_pending()
 
 
 def warmup_model() -> None:
@@ -84,7 +122,7 @@ def index() -> FileResponse:
 # Endpointy ustawień i listy modeli
 @app.get("/api/settings")
 def get_settings():
-    return {**settings_store.get(), "audio_enabled": audio_enabled}
+    return public_settings(settings_store.get())
 
 
 @app.put("/api/settings")
@@ -99,7 +137,7 @@ def put_settings(changes: dict):
     if "ollama_endpoint" in changes or "ollama_model" in changes:
         threading.Thread(target=warmup_model, daemon=True).start()
     run_cleanup()
-    return {**settings, "audio_enabled": audio_enabled}
+    return public_settings(settings)
 
 
 @app.get("/api/models")
@@ -135,36 +173,104 @@ def delete_chat(chat_id: str):
     except KeyError:
         return error("Nie znaleziono czatu.", 404)
     sessions.pop(chat_id, None)
+    attachment_store.delete_for_chat(chat_id)
     return {"ok": True}
+
+
+# Załączniki: upload jako oczekujący, przypisanie do czatu dopiero w POST /api/chat
+@app.post("/api/attachments")
+def upload_attachment(file: UploadFile = File(...)):
+    # czytamy o bajt więcej niż limit - wystarczy, żeby wykryć za duży plik
+    data = file.file.read(Attachments.MAX_BYTES + 1)
+    try:
+        attachment = attachment_store.save(data, name=file.filename or "")
+    except AttachmentError as exc:
+        return attachment_error(exc)
+    return public_attachment(attachment)
+
+
+@app.delete("/api/attachments/{attachment_id}")
+def delete_pending_attachment(attachment_id: str):
+    try:
+        if not attachment_store.delete(None, attachment_id):
+            return error("Nie znaleziono załącznika.", 404, "not_found")
+    except AttachmentError as exc:
+        return attachment_error(exc)
+    return {"ok": True}
+
+
+@app.get("/api/chats/{chat_id}/attachments/{attachment_id}")
+def get_attachment(chat_id: str, attachment_id: str):
+    try:
+        attachment = attachment_store.get(chat_id, attachment_id)
+        data = attachment_store.read_bytes(chat_id, attachment_id)
+    except AttachmentError as exc:
+        return attachment_error(exc)
+    return Response(
+        content=data,
+        media_type=attachment.mime,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": "inline",
+            "Cache-Control": "private, max-age=86400",
+        },
+    )
+
+
+def check_attachments(chat_id: str | None, attachment_ids: list[str]) -> None:
+    # Sprawdza wszystkie ID przed bind(), żeby błąd nie zostawił części przypisanej do czatu
+    for attachment_id in attachment_ids:
+        if chat_id is not None:
+            try:
+                attachment_store.get(chat_id, attachment_id)
+                continue
+            except AttachmentError:
+                pass
+        attachment_store.get(None, attachment_id)
 
 
 # Strumieniowanie odpowiedzi agenta (NDJSON)
 @app.post("/api/chat")
 def chat(request: ChatRequest):
     message = request.message.strip()
-    if not message:
+    attachment_ids = list(dict.fromkeys(request.attachments))
+    if not message and not attachment_ids:
         return error("Wiadomość jest pusta.")
+    if len(attachment_ids) > Attachments.MAX_PER_MESSAGE:
+        return error(
+            f"Za dużo załączników (maks. {Attachments.MAX_PER_MESSAGE}).", 400, "too_many"
+        )
 
     chat_id = request.chat_id
     try:
         if chat_id:
             store.get(chat_id)
-        else:
+        check_attachments(chat_id, attachment_ids)
+        created = not chat_id
+        if created:
             chat_id = store.create()["id"]
+        bound = attachment_store.bind(attachment_ids, chat_id)
+        # sprzątanie po bind(), żeby cleanup_pending nie usunął sprawdzonych już załączników
+        if created:
             run_cleanup()
     except KeyError:
         return error("Nie znaleziono czatu.", 404)
+    except AttachmentError as exc:
+        return attachment_error(exc)
 
     agent = get_agent(chat_id)
+    # TODO(#51): sprawdzenie vision modelu tutaj, przed zapisem wiadomości do historii
 
     def events():
         yield json.dumps({"type": "chat_id", "id": chat_id}) + "\n"
-        store.append(chat_id, "user", message)
+        store.append(chat_id, "user", message, attachments=[a.id for a in bound])
         reply: list[str] = []
         thinking: list[str] = []
         completed = False
+        # bez załączników wołamy stream(message) - agenci spoza AgentBase nie muszą znać nowego parametru
+        stream = agent.stream(message, bound) if bound else agent.stream(message)
         try:
-            for event in agent.stream(message):
+            for event in stream:
                 if event["type"] == "thinking":
                     thinking.append(event["text"])
                 elif event["type"] == "token":
@@ -229,17 +335,19 @@ def start_gui(
     config_store: SettingsStore | None = None,
     stt_handle: STTBase | None = None,
     tts_handle: TTSBase | None = None,
+    attachments: AttachmentStore | None = None,
     custom_agent_factory: Callable[[dict], AgentBase] | None = None,
     audio_enabled: bool = True,
     host: str = HOST,
     port: int = PORT,
 ) -> None:
     """Funkcja startowa GUI — inicjalizuje przekazane zależności i uruchamia okno."""
-    global store, settings_store, stt, tts, agent_factory
+    global store, settings_store, stt, tts, agent_factory, attachment_store
     globals()["audio_enabled"] = audio_enabled
 
     settings_store = config_store if config_store is not None else SettingsStore()
     store = chat_store if chat_store is not None else ChatStore()
+    attachment_store = attachments if attachments is not None else AttachmentStore()
     settings = settings_store.get()
     stt = stt_handle if stt_handle is not None else create_stt(settings)
     tts = tts_handle if tts_handle is not None else create_tts(settings)
