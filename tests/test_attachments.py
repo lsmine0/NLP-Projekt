@@ -1,3 +1,5 @@
+import base64
+import copy
 import io
 import json
 import sys
@@ -10,7 +12,14 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import Attachments
-from core.Attachments import AttachmentError, AttachmentStore, validate_image
+from core.Attachments import (
+    AttachmentError,
+    AttachmentStore,
+    attachment_part,
+    resolve_messages,
+    resolve_parts,
+    validate_image,
+)
 from core.ChatStore import ChatStore
 
 CHAT = "a" * 32
@@ -126,6 +135,38 @@ def test_cleanup_pending_removes_only_expired(store, tmp_path):
     assert store.cleanup_pending() == [old.id]
     store.get(None, fresh.id)
     assert not list((tmp_path / Attachments.PENDING_DIR).glob(f"{old.id}.*"))
+
+
+def test_resolve_messages_builds_image_url_without_mutating_context(store):
+    data = image_bytes()
+    attachment = store.save(data, chat_id=CHAT)
+    context = [
+        {"role": "system", "content": "prompt"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "co to?"},
+            attachment_part(attachment),
+        ]},
+    ]
+    original = copy.deepcopy(context)
+
+    resolved = resolve_messages(context, store, CHAT)
+
+    assert context == original
+    assert resolved[0] == context[0]
+    assert resolved[1]["content"][0] == {"type": "text", "text": "co to?"}
+    url = resolved[1]["content"][1]["image_url"]["url"]
+    assert url == "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+
+
+def test_attachment_part_accepts_id_and_resolve_is_scoped(store):
+    attachment = store.save(image_bytes(), chat_id=CHAT)
+    assert attachment_part(attachment.id) == attachment_part(attachment) == {
+        "type": "attachment", "id": attachment.id,
+    }
+    with pytest.raises(AttachmentError) as exc:
+        resolve_parts([attachment_part(attachment)], store, OTHER_CHAT)
+    assert exc.value.code == "not_found"
+    assert resolve_parts("zwykły tekst", store, CHAT) == "zwykły tekst"
 
 
 def test_chat_store_keeps_attachment_ids(tmp_path):

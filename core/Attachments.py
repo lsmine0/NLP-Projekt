@@ -9,6 +9,7 @@ Dostęp zawsze przez parę (chat_id, id), więc załącznika z innego czatu nie 
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
 import re
@@ -93,6 +94,44 @@ def validate_image(data: bytes) -> tuple[str, int, int]:
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError):
         raise AttachmentError("bad_format", "Plik nie jest poprawnym obrazem.") from None
     return ALLOWED_FORMATS[image_format][0], width, height
+
+
+# Referencja do załącznika w treści wiadomości user (flow.context trzyma ID, nie base64):
+#   {"role": "user", "content": [{"type": "text", "text": "..."}, {"type": "attachment", "id": "..."}]}
+# Zamiana na format API (image_url z data URL) dopiero przy budowaniu zapytania - resolve_messages().
+ATTACHMENT_PART = "attachment"
+
+
+def attachment_part(attachment: Attachment | str) -> dict:
+    attachment_id = attachment.id if isinstance(attachment, Attachment) else attachment
+    return {"type": ATTACHMENT_PART, "id": attachment_id}
+
+
+def resolve_parts(content, store: "AttachmentStore", chat_id: str | None):
+    """Zamienia referencje w treści na image_url z base64. Tekst i inne części bez zmian."""
+    if not isinstance(content, list):
+        return content
+    resolved = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == ATTACHMENT_PART:
+            attachment = store.get(chat_id, part.get("id"))
+            encoded = base64.b64encode(store.read_bytes(chat_id, attachment.id)).decode("ascii")
+            resolved.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{attachment.mime};base64,{encoded}"},
+            })
+        else:
+            resolved.append(part)
+    return resolved
+
+
+def resolve_messages(messages: list[dict], store: "AttachmentStore", chat_id: str | None) -> list[dict]:
+    """Kopia listy wiadomości gotowa do API - nie modyfikuje przekazanego kontekstu."""
+    return [
+        {**message, "content": resolve_parts(message["content"], store, chat_id)}
+        if isinstance(message.get("content"), list) else message
+        for message in messages
+    ]
 
 
 def _now() -> str:
