@@ -179,6 +179,9 @@ def test_put_settings_updates_system_prompt_and_rejects_non_text(
     chat_store = chat_store_module.ChatStore(directory=tmp_path / "chats")
     monkeypatch.setattr(WebGui, "settings_store", settings_store)
     monkeypatch.setattr(WebGui, "store", chat_store)
+    monkeypatch.setattr(
+        WebGui, "attachment_store", WebGui.AttachmentStore(tmp_path / "attachments")
+    )
     WebGui.sessions["existing"] = object()  # type: ignore[assignment]
 
     try:
