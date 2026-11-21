@@ -20,6 +20,7 @@ class OllamaHandler:
         auto_budget: bool = True,
         *,
         tool_handle: ToolHandle | None = None,
+        request_timeout: float = 60.0,
     ):
         if "://" not in base_url:
             base_url = f"http://{base_url}"
@@ -29,13 +30,17 @@ class OllamaHandler:
         self.base_url = base_url.rstrip("/").removesuffix("/v1") + "/v1"
         self.client = OpenAI(
             base_url=self.base_url,
-            api_key=key
+            api_key=key, timeout=request_timeout, max_retries=0
         )
+        self.request_timeout = request_timeout
         self.model = None
         self.thinking = None
         self.ToolsHandle = tool_handle
         self.reserve_tokens = max(256, int(reserve_tokens))
         self.auto_budget = bool(auto_budget)
+
+    def close(self) -> None:
+        self.client.close()
 
     def GetModels(self):
         Logger.printInfo("Getting model list.")
@@ -66,7 +71,7 @@ class OllamaHandler:
                 f"{native_url}/api/show",
                 json={"model": self.model},
                 headers=headers,
-                timeout=3,
+                timeout=min(3.0, self.request_timeout),
             )
             response.raise_for_status()
             return response.json()
@@ -76,7 +81,7 @@ class OllamaHandler:
             response = requests.get(
                 f"{native_url}/props",
                 headers=headers,
-                timeout=3,
+                timeout=min(3.0, self.request_timeout),
             )
             response.raise_for_status()
             props = response.json()

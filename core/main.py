@@ -21,9 +21,10 @@ from core.AgentAdapter import (
     create_tts,
 )
 from core.ChatStore import ChatStore, SettingsStore
-from handlers.OllamaHandle import OllamaHandler
 from handlers.ToolHandle import ToolHandle
 from tools.ToolBuilder import build_tools
+from core.RuntimeConfig import RuntimeConfig
+from core.ModelProvider import ModelProvider, create_provider
 
 
 class StartupError(RuntimeError):
@@ -57,11 +58,16 @@ class AppRuntime:
     settings_store: SettingsStore
     chat_store: ChatStore
     tool_handle: ToolHandle
-    provider: OllamaHandler
+    provider: ModelProvider
     stt: STTBase
     tts: TTSBase
     agent_factory: Callable[[dict], AgentBase]
     audio_enabled: bool = True
+    config: RuntimeConfig | None = None
+    provider_factory: Callable[[dict], ModelProvider] | None = None
+    providers: list[Any] = field(default_factory=list)
+    config_locked: bool = False
+    _closed: bool = False
     mcp_clients: list[Any] = field(default_factory=list)
 
     @property
@@ -70,6 +76,17 @@ class AppRuntime:
 
     def close(self) -> None:
         """Zamyka zasoby aplikacji: TTS, STT, MCP oraz sesje."""
+        if self._closed:
+            return
+        self._closed = True
+        for provider in {id(p): p for p in [self.provider, *self.providers]}.values():
+            close = getattr(provider, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        self.providers.clear()
         for audio_component in (self.tts, self.stt):
             for method_name in ("close", "stop"):
                 method = getattr(audio_component, method_name, None)
@@ -223,26 +240,24 @@ def build_provider(
     tool_handle: ToolHandle,
     provider_name: str = "ollama",
     require_connection: bool = False,
-) -> OllamaHandler:
+) -> ModelProvider:
     provider_norm = (provider_name or "ollama").strip().lower()
     if provider_norm not in ("ollama", "openai", "local"):
         raise StartupError(f"Nieobsługiwany provider: '{provider_name}'.")
 
-    endpoint = str(settings.get("ollama_endpoint") or "").strip()
-    if not endpoint:
-        raise StartupError("Brak skonfigurowanego adresu serwera modeli (ollama_endpoint).")
-
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OLLAMA_API_KEY") or "ollam"
-    if provider_norm == "openai" and api_key == "ollam":
-        raise StartupError("Brak klucza API dla providera 'openai' (ustaw OPENAI_API_KEY).")
-
-    handler = OllamaHandler(base_url=endpoint, key=api_key, tool_handle=tool_handle)
+    try:
+        config = RuntimeConfig.from_env(settings, provider_name=provider_norm)
+    except ValueError as exc:
+        raise StartupError(str(exc)) from exc
+    endpoint = config.endpoint
+    handler = create_provider(config, tool_handle)
 
     try:
         models = [m.id for m in handler.GetModels()]
     except Exception as exc:
-        msg = f"Brak połączenia z serwerem modeli ({endpoint}): {exc}"
+        msg = "Brak połączenia z serwerem modeli."
         if require_connection:
+            handler.close()
             raise StartupError(msg) from exc
         Logger.printWarning(msg)
         return handler
@@ -250,14 +265,16 @@ def build_provider(
     if not models:
         msg = f"Brak dostępnych modeli na serwerze ({endpoint})."
         if require_connection:
+            handler.close()
             raise StartupError(msg)
         Logger.printWarning(msg)
         return handler
 
-    target_model = settings.get("ollama_model") or models[0]
+    target_model = config.model or models[0]
     if not handler.SetModel(target_model):
         msg = f"Model '{target_model}' nie jest dostępny na serwerze ({endpoint})."
         if require_connection:
+            handler.close()
             raise StartupError(msg)
         Logger.printWarning(msg)
 
@@ -280,36 +297,81 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
     settings_store, chat_store = build_config(args.config)
     settings = settings_store.get()
 
-    tool_handle = build_tools()
-    mcp_handle = build_mcp(
-        tool_handle,
-        settings_store,
-        config_path=args.mcp_config,
-        enabled=not args.no_mcp,
-    )
-    provider = build_provider(
-        settings,
-        tool_handle=tool_handle,
-        provider_name=args.provider,
-        require_connection=bool(args.cli or args.benchmark),
-    )
-    stt, tts = build_audio(no_audio=args.no_audio, settings=settings)
+    config = RuntimeConfig.from_env(settings, provider_name=args.provider)
+    tool_handle = build_tools(workspace_dir=config.workspace)
+    providers = []
 
-    def agent_factory(current_settings: dict | None = None) -> AgentBase:
-        cfg = current_settings or settings_store.get()
-        return create_agent(cfg, tool_handle=tool_handle)
+    def provider_factory(current_settings):
+        cfg = RuntimeConfig.from_env(current_settings, provider_name=args.provider)
+        provider = create_provider(cfg, tool_handle)
+        providers.append(provider)
+        return provider
+
+    provider = provider_factory(settings)
+    mcp_handle = None
+    try:
+        mcp_handle = build_mcp(tool_handle, settings_store,
+                               config_path=args.mcp_config, enabled=not args.no_mcp)
+        if args.cli or args.benchmark:
+            names = [m.id for m in provider.GetModels()]
+            target = config.model or (names[0] if names else '')
+            if not target or not provider.SetModel(target):
+                raise StartupError('Nie można wybrać modelu.')
+        stt, tts = build_audio(no_audio=args.no_audio, settings=settings)
+    except Exception:
+        for component in [provider, mcp_handle]:
+            close = getattr(component, 'close', None)
+            if callable(close):
+                close()
+        raise
+
+    def agent_factory(current_settings=None):
+        cfg = dict(current_settings or settings_store.get())
+        resolved = RuntimeConfig.from_env(cfg, provider_name=args.provider)
+        cfg.update(ollama_endpoint=resolved.endpoint, ollama_model=resolved.model)
+        return create_agent(cfg, tool_handle=tool_handle, provider=provider_factory(cfg))
 
     return AppRuntime(
-        settings_store=settings_store,
-        chat_store=chat_store,
-        tool_handle=tool_handle,
-        provider=provider,
-        stt=stt,
-        tts=tts,
-        agent_factory=agent_factory,
-        audio_enabled=not args.no_audio,
-        mcp_clients=[mcp_handle] if mcp_handle is not None else [],
+        settings_store=settings_store, chat_store=chat_store, tool_handle=tool_handle,
+        provider=provider, stt=stt, tts=tts, agent_factory=agent_factory,
+        audio_enabled=not args.no_audio, config=config, provider_factory=provider_factory,
+        providers=providers, mcp_clients=[mcp_handle] if mcp_handle is not None else [],
     )
+
+
+def build_api_runtime(config=None, *, provider_factory=None, tool_factory=None):
+    """Headless defaults: no audio, no MCP, no model/network calls on construction."""
+    if config is None:
+        initial = RuntimeConfig.from_env()
+        config = RuntimeConfig.from_env(SettingsStore(initial.data_dir / "settings.json").get())
+    settings_store = SettingsStore(config.data_dir / 'settings.json')
+    chat_store = ChatStore(config.data_dir / 'chats')
+    tools = tool_factory() if tool_factory else build_tools(workspace_dir=config.workspace)
+    make_provider = provider_factory or create_provider
+    providers = []
+
+    def factory(settings):
+        # Explicit config/env owns backend configuration; no credentials enter SettingsStore.
+        from dataclasses import replace
+        model = config.model or settings.get('ollama_model', '')
+        p = make_provider(replace(config, model=model), tools)
+        providers.append(p)
+        return p
+
+    primary = factory(settings_store.get())
+    try:
+        stt, tts = build_audio(no_audio=True)
+        def agent_factory(settings):
+            settings = dict(settings, ollama_endpoint=config.endpoint,
+                            ollama_model=config.model or settings.get('ollama_model', ''))
+            return create_agent(settings, tool_handle=tools, provider=factory(settings))
+        return AppRuntime(settings_store=settings_store, chat_store=chat_store,
+                          tool_handle=tools, provider=primary, stt=stt, tts=tts,
+                          agent_factory=agent_factory, audio_enabled=False,
+                          config=config, provider_factory=factory, providers=providers, config_locked=True)
+    except Exception:
+        primary.close()
+        raise
 
 
 def _render_thinking_block(thinking_text: str) -> None:
@@ -696,17 +758,10 @@ def main(argv: list[str] | None = None) -> int:
 
         from core.WebGui import start_gui
 
-        start_gui(
-            chat_store=runtime.chat_store,
-            config_store=runtime.settings_store,
-            stt_handle=runtime.stt,
-            tts_handle=runtime.tts,
-            custom_agent_factory=runtime.agent_factory,
-            audio_enabled=runtime.audio_enabled,
-        )
+        start_gui(runtime=runtime)
         return 0
 
-    except StartupError as err:
+    except (StartupError, ValueError) as err:
         Logger.printError(str(err))
         return 2
     except KeyboardInterrupt:
