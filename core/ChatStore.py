@@ -73,9 +73,15 @@ class ChatStore:
         summaries.sort(key=lambda c: c["updated_at"], reverse=True)
         return summaries
 
-    def append(self, chat_id: str, role: str, content: str) -> dict:
+    # attachments: lista ID z core/Attachments.py (w JSON czatu nie trzymamy danych obrazu)
+    def append(
+        self, chat_id: str, role: str, content: str, attachments: list[str] | None = None
+    ) -> dict:
         chat = self.get(chat_id)
-        chat["messages"].append({"role": role, "content": content})
+        message = {"role": role, "content": content}
+        if attachments:
+            message["attachments"] = list(attachments)
+        chat["messages"].append(message)
         chat["updated_at"] = _now()
         if role == "user" and chat["title"] == DEFAULT_TITLE:
             chat["title"] = content.strip()[:28] or DEFAULT_TITLE

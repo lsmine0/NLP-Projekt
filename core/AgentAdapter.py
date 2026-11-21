@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from importlib.util import find_spec
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 from core import Logger
 from core.AgentFlow import AgentFlow
 from handlers.ContextHandle import ContextHandle
@@ -12,18 +12,24 @@ from handlers.STTHandle import STTHandle
 from handlers.TTSHandle import SoundDeviceSink, TTSHandle
 from core.PromptBuilder import build_system_prompt, build_tool_prompt
 
+if TYPE_CHECKING:
+    from core.Attachments import Attachment
+
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 
 # Interfejs bazowy agenta dla czatu
 class AgentBase:
 
-    def stream(self, user_text: str) -> Iterator[dict]:
+    # attachments: obrazy dołączone do tej wiadomości (format z core/Attachments.py)
+    def stream(
+        self, user_text: str, attachments: list[Attachment] | None = None
+    ) -> Iterator[dict]:
         raise NotImplementedError
 
-    def run(self, user_text: str) -> str:
+    def run(self, user_text: str, attachments: list[Attachment] | None = None) -> str:
         parts = []
-        for event in self.stream(user_text):
+        for event in self.stream(user_text, attachments):
             if event["type"] == "token":
                 parts.append(event["text"])
             elif event["type"] == "error":
@@ -100,7 +106,13 @@ class OllamaAgent(AgentBase):
                 raise RuntimeError(f"Model '{target}' nie jest dostępny na serwerze.")
         return self.handler
 
-    def stream(self, user_text: str) -> Iterator[dict]:
+    def stream(
+        self, user_text: str, attachments: list[Attachment] | None = None
+    ) -> Iterator[dict]:
+        if attachments:
+            # TODO(#51): konwersja do treści multimodalnej i sprawdzenie capability vision
+            yield {"type": "error", "message": "Obsługa obrazów nie jest jeszcze dostępna."}
+            return
         try:
             self._get_handler()
         except Exception as error:
