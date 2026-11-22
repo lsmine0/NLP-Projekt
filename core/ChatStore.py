@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +18,19 @@ DEFAULT_SYSTEM_PROMPT = (
     "jeśli faktycznie jej nie wykonałeś; jasno informuj o ograniczeniach i "
     "dopytuj, gdy brakuje ważnych informacji."
 )
+_MERMAID_BLOCK_RE = re.compile(
+    r"(?im)^ {0,3}(?:`{3,}|~{3,})[ \t]*mermaid(?:[ \t]+[^\r\n]*)?\r?\n"
+    r"(?P<source>[\s\S]*?)^ {0,3}(?:`{3,}|~{3,})[ \t]*$"
+)
+
+
+def _normalize_mermaid_source(source: str) -> str:
+    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(line.strip() for line in lines)
 
 
 def _now() -> str:
@@ -87,6 +101,30 @@ class ChatStore:
             chat["title"] = content.strip()[:28] or DEFAULT_TITLE
         _write_json(self._path(chat_id), chat)
         return chat
+
+    def replace_last_mermaid_source(
+        self, chat_id: str, original_source: str, corrected_source: str
+    ) -> bool:
+        chat = self.get(chat_id)
+        expected = _normalize_mermaid_source(original_source)
+        for message in reversed(chat["messages"]):
+            if message.get("role") != "assistant":
+                continue
+            content = message.get("content", "")
+            matches = list(_MERMAID_BLOCK_RE.finditer(content))
+            for match in reversed(matches):
+                if _normalize_mermaid_source(match.group("source")) != expected:
+                    continue
+                replacement = corrected_source.strip("\r\n") + "\n"
+                message["content"] = (
+                    content[:match.start("source")]
+                    + replacement
+                    + content[match.end("source"):]
+                )
+                chat["updated_at"] = _now()
+                _write_json(self._path(chat_id), chat)
+                return True
+        return False
 
     def delete(self, chat_id: str) -> bool:
         path = self._path(chat_id)

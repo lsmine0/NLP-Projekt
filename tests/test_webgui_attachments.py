@@ -39,6 +39,12 @@ class LegacyAgent(FakeAgent):
         yield {"type": "token", "text": "ok"}
 
 
+class MermaidRepairAgent(FakeAgent):
+    def repair_mermaid(self, source, error):
+        self.repair_request = (source, error)
+        return "```mermaid\nsequenceDiagram\n    Note over User,Server: Logowanie\n```"
+
+
 @pytest.fixture
 def gui(tmp_path, monkeypatch):
     agents = []
@@ -80,6 +86,31 @@ def test_upload_returns_public_record_without_paths(gui):
     assert (record["mime"], record["width"], record["height"], record["name"]) == (
         "image/png", 4, 3, "kot.png",
     )
+
+
+def test_invalid_mermaid_is_repaired_and_saved(gui):
+    chat = WebGui.store.create()
+    original = 'sequenceDiagram\n    note "Logowanie"'
+    WebGui.store.append(chat["id"], "user", "Narysuj diagram logowania")
+    WebGui.store.append(chat["id"], "assistant", f"```mermaid\n{original}\n```")
+    agent = MermaidRepairAgent()
+    WebGui.sessions[chat["id"]] = agent
+
+    response = gui.post(
+        f"/api/chats/{chat['id']}/mermaid/repair",
+        json={"source": original, "error": "Expecting 'over'"},
+    )
+    assert response.status_code == 200
+    corrected = response.json()["source"]
+    assert "Note over User,Server: Logowanie" in corrected
+    assert agent.repair_request == (original, "Expecting 'over'")
+
+    saved = gui.put(
+        f"/api/chats/{chat['id']}/mermaid",
+        json={"original_source": original, "corrected_source": corrected},
+    )
+    assert saved.status_code == 200
+    assert corrected in WebGui.store.get(chat["id"])["messages"][-1]["content"]
 
 
 @pytest.mark.parametrize("data, status, code", [

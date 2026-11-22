@@ -6,7 +6,9 @@
     <title>Jarvis</title>
     <link rel="stylesheet" type="text/css" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" onerror="document.documentElement.classList.add('icons-offline')">
     <link rel="stylesheet" type="text/css" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" onerror="document.documentElement.classList.add('icons-offline')">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/vendor/marked.min.js"></script>
+    <script src="/vendor/purify.min.js"></script>
+    <script src="/vendor/mermaid.min.js"></script>
     <style>
         :root {
             color-scheme: light;
@@ -452,6 +454,55 @@
             border: 0;
             border-top: 1px solid var(--border-color);
             margin: 10px 0;
+        }
+        .mermaid-block {
+            margin: 10px 0;
+            overflow: hidden;
+            background: var(--bg-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+        .mermaid-toolbar {
+            display: flex;
+            gap: 6px;
+            padding: 7px 9px;
+            background: var(--bg-subtle);
+            border-bottom: 1px solid var(--border-color);
+        }
+        .mermaid-toggle {
+            padding: 4px 9px;
+            color: var(--text-secondary);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .mermaid-toggle:hover { background: var(--bg-hover); }
+        .mermaid-toggle[aria-pressed="true"] {
+            color: var(--accent-text);
+            background: var(--accent-soft);
+            border-color: var(--border-color);
+        }
+        .mermaid-view {
+            overflow-x: auto;
+            padding: 12px;
+            text-align: center;
+        }
+        .mermaid-view svg {
+            max-width: 100%;
+            height: auto;
+        }
+        .mermaid-source {
+            margin: 0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+        }
+        .mermaid-error {
+            margin: 0;
+            padding: 10px 12px;
+            color: var(--danger);
+            text-align: left;
+            white-space: pre-wrap;
         }
         .stopped-divider {
             display: flex;
@@ -946,6 +997,8 @@
         const historySection = $("history-section");
         const themeSelect = $("theme-select");
         const NEW_CHAT_TITLE = "Nowa rozmowa";
+        let mermaidBlockCounter = 0;
+        let mermaidRenderCounter = 0;
 
         let chats = [];
         let activeChatId = null;
@@ -1175,12 +1228,15 @@
         // Motyw jasny / ciemny zapisywany na dysku w data/settings.json
         function applyTheme(theme, persist = false) {
             const normalized = theme === "light" ? "light" : "dark";
+            const themeChanged = document.documentElement.getAttribute("data-theme") !== normalized;
             document.documentElement.setAttribute("data-theme", normalized);
             const isDark = normalized === "dark";
             $("theme-icon").className = isDark ? "ph ph-sun" : "ph ph-moon";
             $("theme-label").textContent = isDark ? "Tryb jasny" : "Tryb ciemny";
             themeSelect.value = normalized;
             settings.theme = normalized;
+            configureMermaid();
+            if (themeChanged) refreshMermaidTheme();
             if (persist) {
                 api("/api/settings", {
                     method: "PUT",
@@ -1223,20 +1279,281 @@
             return { thinking: thinking.trim(), answer: clean.replace(/^\s+/, "").trimEnd(), inProgress, stopped };
         }
 
-        // Parser Markdown (marked.js z lekkim fallbackiem offline)
+        function escapeHtml(text) {
+            return String(text).replace(/[&<>"']/g, (character) => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+            })[character]);
+        }
+
+        function hideIncompleteMermaidFence(markdown) {
+            let fence = null;
+            let offset = 0;
+            for (const match of markdown.matchAll(/([^\n]*\n|[^\n]+$)/g)) {
+                const line = match[0].replace(/\r?\n$/, "");
+                if (!fence) {
+                    const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+                    if (opening) {
+                        const language = opening[2].trim().split(/\s+/, 1)[0].toLowerCase();
+                        fence = {
+                            marker: opening[1][0],
+                            length: opening[1].length,
+                            start: offset,
+                            mermaid: language === "mermaid",
+                        };
+                    }
+                } else {
+                    const closing = new RegExp(`^ {0,3}${fence.marker}{${fence.length},}\\s*$`);
+                    if (closing.test(line)) fence = null;
+                }
+                offset += match[0].length;
+            }
+            return fence?.mermaid ? markdown.slice(0, fence.start) : markdown;
+        }
+
+        const markdownRenderer = window.marked ? new window.marked.Renderer() : null;
+        if (markdownRenderer) {
+            const renderCode = markdownRenderer.code.bind(markdownRenderer);
+            markdownRenderer.code = (token) => {
+                const language = (token.lang || "").trim().split(/\s+/, 1)[0].toLowerCase();
+                if (language !== "mermaid") return renderCode(token);
+                const id = `mermaid-${++mermaidBlockCounter}`;
+                return `<section class="mermaid-block" data-mermaid-id="${id}">
+                    <div class="mermaid-toolbar">
+                        <button class="mermaid-toggle" type="button" data-view="diagram" aria-pressed="false">Diagram</button>
+                        <button class="mermaid-toggle" type="button" data-view="source" aria-pressed="true">Kod źródłowy</button>
+                    </div>
+                    <div class="mermaid-view" hidden></div>
+                    <p class="mermaid-error" hidden></p>
+                    <pre class="mermaid-source"><code>${escapeHtml(token.text)}</code></pre>
+                </section>`;
+            };
+        }
+
         function renderMarkdown(md) {
             if (!md) return "";
-            if (window.marked) return window.marked.parse(md, { breaks: true });
-            return md
-                .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-                .replace(/```(\w*)\n?([\s\S]*?)```/g, "<pre><code>$2</code></pre>")
-                .replace(/`([^`]+)`/g, "<code>$1</code>")
-                .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-                .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-                .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-                .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-                .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
-                .replace(/\n/g, "<br>");
+            const completeMarkdown = hideIncompleteMermaidFence(md);
+            const rendered = window.marked && window.DOMPurify
+                ? window.marked.parse(completeMarkdown, { breaks: true, renderer: markdownRenderer })
+                : escapeHtml(completeMarkdown).replace(/\n/g, "<br>");
+            return window.DOMPurify
+                ? window.DOMPurify.sanitize(rendered, { USE_PROFILES: { html: true } })
+                : rendered;
+        }
+
+        function configureMermaid() {
+            if (!window.mermaid) return;
+            const root = document.documentElement;
+            const colors = getComputedStyle(root);
+            const color = (name) => colors.getPropertyValue(name).trim();
+            window.mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: "strict",
+                htmlLabels: false,
+                theme: "base",
+                themeVariables: {
+                    background: color("--bg-surface"),
+                    primaryColor: color("--bg-subtle"),
+                    primaryTextColor: color("--text-primary"),
+                    primaryBorderColor: color("--accent"),
+                    lineColor: color("--text-secondary"),
+                    secondaryColor: color("--bg-main"),
+                    secondaryTextColor: color("--text-primary"),
+                    secondaryBorderColor: color("--border-color"),
+                    tertiaryColor: color("--bg-surface"),
+                    tertiaryTextColor: color("--text-primary"),
+                    tertiaryBorderColor: color("--border-color"),
+                    mainBkg: color("--bg-subtle"),
+                    nodeBorder: color("--accent"),
+                    clusterBkg: color("--bg-main"),
+                    clusterBorder: color("--border-color"),
+                    edgeLabelBackground: color("--bg-surface"),
+                    titleColor: color("--text-primary"),
+                    fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+                },
+                flowchart: { htmlLabels: false },
+            });
+        }
+
+        function showMermaidView(block, view) {
+            const diagram = view === "diagram";
+            block.querySelector(".mermaid-view").hidden = !diagram;
+            block.querySelector(".mermaid-source").hidden = diagram;
+            block.querySelector(".mermaid-error").hidden = block.dataset.renderState !== "error";
+            block.querySelectorAll(".mermaid-toggle").forEach((button) => {
+                button.setAttribute("aria-pressed", String(button.dataset.view === view));
+            });
+        }
+
+        async function renderMermaidBlock(block) {
+            const source = block.querySelector(".mermaid-source code").textContent;
+            const output = block.querySelector(".mermaid-view");
+            const error = block.querySelector(".mermaid-error");
+            const renderId = `mermaid-render-${++mermaidRenderCounter}`;
+            block.dataset.renderState = "rendering";
+            block.dataset.theme = document.documentElement.getAttribute("data-theme");
+            block.dataset.renderId = renderId;
+            output.replaceChildren();
+            error.textContent = "";
+            showMermaidView(block, "source");
+
+            if (!window.mermaid) {
+                block.dataset.renderState = "error";
+                error.textContent = "Biblioteka Mermaid jest niedostępna. Wyświetlam kod źródłowy.";
+                showMermaidView(block, "source");
+                return;
+            }
+
+            try {
+                const result = await window.mermaid.render(renderId, source);
+                if (!block.isConnected || block.dataset.renderId !== renderId) return;
+                const safeSvg = window.DOMPurify.sanitize(result.svg, {
+                    USE_PROFILES: { svg: true, svgFilters: true },
+                });
+                const svg = document.createElement("template");
+                svg.innerHTML = safeSvg;
+                output.replaceChildren(svg.content.cloneNode(true));
+                block.dataset.renderState = "rendered";
+                delete block.dataset.parseError;
+                showMermaidView(block, "diagram");
+            } catch (renderError) {
+                if (!block.isConnected || block.dataset.renderId !== renderId) return;
+                block.dataset.renderState = "error";
+                block.dataset.parseError = String(renderError.message || renderError);
+                error.textContent = `Nie udało się wyrenderować diagramu Mermaid: ${block.dataset.parseError}. Wyświetlam kod źródłowy.`;
+                showMermaidView(block, "source");
+            } finally {
+                document.getElementById(`d${renderId}`)?.remove();
+            }
+        }
+
+        function queueMermaidRender(block) {
+            block.mermaidRenderPromise = renderMermaidBlock(block);
+            return block.mermaidRenderPromise;
+        }
+
+        function refreshMermaidTheme() {
+            document.querySelectorAll(".mermaid-block").forEach((block) => {
+                queueMermaidRender(block);
+            });
+        }
+
+        function setMarkdown(element, markdown) {
+            const previousBlocks = new Map();
+            element.querySelectorAll(".mermaid-block").forEach((block) => {
+                const source = block.querySelector(".mermaid-source code").textContent;
+                const key = `${block.dataset.theme}\0${source}`;
+                if (!previousBlocks.has(key)) previousBlocks.set(key, []);
+                previousBlocks.get(key).push(block);
+            });
+
+            element.innerHTML = renderMarkdown(markdown);
+            element.querySelectorAll(".mermaid-block").forEach((block) => {
+                const source = block.querySelector(".mermaid-source code").textContent;
+                const key = `${document.documentElement.getAttribute("data-theme")}\0${source}`;
+                const previous = previousBlocks.get(key)?.shift();
+                if (previous) block.replaceWith(previous);
+                else queueMermaidRender(block);
+            });
+        }
+
+        function normalizeCommonMermaidSyntax(source) {
+            let normalized = source
+                .replace(/^(graph|flowchart)\s+(TB|TD|BT|RL|LR)\s+(?=\S)/im, "$1 $2\n")
+                .replace(/-->\s*\|->\s*\|\s*(?:>|->)\s*/g, "--> ")
+                .replace(/([\]\)\}])\s+([A-Za-z_][\w]*\s+-->)/g, "$1\n$2");
+
+            if (/^\s*(?:graph|flowchart)\b/im.test(normalized)) {
+                normalized = normalized
+                    .replace(/\bend(?=\s*(?:\[|\(|\{|-->|;))/gim, "endNode")
+                    .replace(/(-->\s*)end(?=\s*(?:;|$))/gim, "$1endNode");
+            }
+
+            if (/^\s*sequenceDiagram\b/im.test(normalized)) {
+                normalized = normalized.replace(/([^\r\n])\s+(?=note\s+")/gi, "$1\n");
+                const participants = new Set();
+                for (const match of normalized.matchAll(/^\s*(?:participant|actor)\s+([A-Za-z_][\w]*)/gim)) {
+                    participants.add(match[1]);
+                }
+                for (const match of normalized.matchAll(/^\s*([A-Za-z_][\w]*)\s*(?:-->>|->>|-->|->)\s*([A-Za-z_][\w]*)\s*:/gim)) {
+                    participants.add(match[1]);
+                    participants.add(match[2]);
+                }
+                const names = Array.from(participants).slice(0, 2);
+                if (names.length) {
+                    normalized = normalized.replace(
+                        /^(\s*)note\s+"([^"\r\n]*)"\s*$/gim,
+                        (_, indent, text) => `${indent}Note over ${names.join(",")}: ${text}`,
+                    );
+                }
+            }
+
+            return normalized;
+        }
+
+        async function repairInvalidMermaidBlocks(root, chatId) {
+            if (!chatId) return;
+            const blocks = Array.from(root.querySelectorAll(".mermaid-block"));
+            await Promise.all(blocks.map((block) => block.mermaidRenderPromise).filter(Boolean));
+
+            for (const block of blocks) {
+                if (!block.isConnected || block.dataset.renderState !== "error"
+                    || !block.dataset.parseError || block.dataset.repairAttempted === "true") continue;
+                block.dataset.repairAttempted = "true";
+                const code = block.querySelector(".mermaid-source code");
+                const originalSource = code.textContent;
+                const originalError = block.dataset.parseError;
+                const error = block.querySelector(".mermaid-error");
+                error.textContent = "Składnia Mermaid jest niepoprawna. Próbuję ją automatycznie naprawić…";
+                showMermaidView(block, "source");
+
+                try {
+                    let correctedSource = normalizeCommonMermaidSyntax(originalSource);
+                    if (correctedSource !== originalSource) {
+                        code.textContent = correctedSource;
+                        await queueMermaidRender(block);
+                    }
+                    if (block.dataset.renderState !== "rendered") {
+                        code.textContent = originalSource;
+                        await queueMermaidRender(block);
+                        const repaired = await api(`/api/chats/${chatId}/mermaid/repair`, {
+                            method: "POST",
+                            body: JSON.stringify({ source: originalSource, error: originalError }),
+                        });
+                        if (!block.isConnected) continue;
+                        correctedSource = repaired.source;
+                        code.textContent = correctedSource;
+                        await queueMermaidRender(block);
+                    }
+
+                    if (block.dataset.renderState !== "rendered") {
+                        const repairError = block.dataset.parseError;
+                        code.textContent = originalSource;
+                        await queueMermaidRender(block);
+                        error.textContent = `Automatyczna naprawa nie powiodła się: ${repairError}. Wyświetlam oryginalny kod.`;
+                        showMermaidView(block, "source");
+                        continue;
+                    }
+
+                    try {
+                        await api(`/api/chats/${chatId}/mermaid`, {
+                            method: "PUT",
+                            body: JSON.stringify({
+                                original_source: originalSource,
+                                corrected_source: correctedSource,
+                            }),
+                        });
+                    } catch (saveError) {
+                        code.textContent = originalSource;
+                        await queueMermaidRender(block);
+                        error.textContent = `Diagram został naprawiony, ale nie udało się zapisać poprawki: ${saveError.message}`;
+                        showMermaidView(block, "source");
+                    }
+                } catch (repairError) {
+                    if (!block.isConnected) continue;
+                    error.textContent = `Automatyczna naprawa nie powiodła się: ${repairError.message}. Wyświetlam oryginalny kod.`;
+                    showMermaidView(block, "source");
+                }
+            }
         }
 
         function createDotsElement() {
@@ -1258,7 +1575,7 @@
             `;
             const content = document.createElement("div");
             content.className = "thinking-content";
-            content.innerHTML = renderMarkdown(text);
+            setMarkdown(content, text);
             details.append(summary, content);
             return details;
         }
@@ -1325,7 +1642,7 @@
                 }
                 const answer = document.createElement("div");
                 answer.className = "answer-content";
-                answer.innerHTML = renderMarkdown(parsed.answer);
+                setMarkdown(answer, parsed.answer);
                 bubble.append(answer);
             } else {
                 if (attachments.length) bubble.append(createAttachmentsElement(attachments));
@@ -1343,6 +1660,12 @@
             messages.scrollTop = messages.scrollHeight;
             return bubble;
         }
+
+        messages.addEventListener("click", (event) => {
+            const button = event.target.closest(".mermaid-toggle");
+            if (!button || !messages.contains(button)) return;
+            showMermaidView(button.closest(".mermaid-block"), button.dataset.view);
+        });
 
         function renderEmpty() {
             messages.replaceChildren();
@@ -1405,11 +1728,12 @@
                 const chat = await api(`/api/chats/${id}`);
                 activeChatId = chat.id;
                 messages.replaceChildren();
-                chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
+chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
                     content,
                     role === "user" ? "user" : "agent",
                     attachments.map((id) => ({ url: `/api/chats/${chat.id}/attachments/${id}`, name: "" })),
                 ));
+                await repairInvalidMermaidBlocks(messages, id);
                 if (!chat.messages.length) renderEmpty();
                 setTitle(chat.title);
                 renderHistory();
@@ -1523,7 +1847,7 @@
                         const tc = thinkingBox.querySelector(".thinking-content");
                         const tcAtBottom = tc.scrollHeight - tc.scrollTop - tc.clientHeight < 30;
                         const prevScrollTop = tc.scrollTop;
-                        tc.innerHTML = renderMarkdown(fullThinking);
+                        setMarkdown(tc, fullThinking);
                         tc.scrollTop = tcAtBottom ? tc.scrollHeight : prevScrollTop;
                         thinkingBox.classList.toggle("active", isThinkingNow);
                         thinkingBox.querySelector(".thinking-label").textContent = isThinkingNow
@@ -1534,7 +1858,7 @@
 
                 if (parsed.answer) {
                     dots.remove();
-                    answerEl.innerHTML = renderMarkdown(parsed.answer);
+                    setMarkdown(answerEl, parsed.answer);
                 }
                 scrollToBottom(false);
             };
@@ -1590,6 +1914,7 @@
                     buffer = lines.pop();
                     lines.filter(Boolean).forEach((line) => handle(JSON.parse(line)));
                 }
+                await repairInvalidMermaidBlocks(bubble, activeChatId);
             } catch (error) {
                 if (error.name !== "AbortError") showError(error.message);
             } finally {
@@ -1825,6 +2150,8 @@
                 ? "Historia czatów jest widoczna."
                 : "Historia czatów jest ukryta.";
         });
+
+        configureMermaid();
 
         async function init() {
             renderEmpty();

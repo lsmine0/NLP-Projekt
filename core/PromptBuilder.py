@@ -76,6 +76,19 @@ def build_system_prompt(
     sections.append(
         "Stałe zasady i opis narzędzi (część automatyczna; stosuj niezależnie od "
         "instrukcji użytkownika powyżej):\n"
+        "Jeśli użytkownik prosi o utworzenie lub narysowanie diagramu i nie "
+        "wskazuje innego formatu, przygotuj go w Mermaid. Umieść składnię w "
+        "kompletnym, zamkniętym bloku fenced rozpoczynającym się od ```mermaid; "
+        "zwróć go bezpośrednio w odpowiedzi. Nie używaj narzędzi, nie twórz ani "
+        "nie wyszukuj plików .mermaid, nie podawaj poleceń CLI ani skryptów. "
+        "Nie twierdź, że utworzyłeś plik. Nie zastępuj diagramu kodem aplikacji "
+        "ani samym opisem. Dobierz typ "
+        "diagramu, np. flowchart TD, sequenceDiagram lub erDiagram. W flowchart "
+        "używaj poprawnej składni krawędzi A --> B; etykietę zapisuj jako "
+        "A -->|tekst etykiety| B i nie umieszczaj strzałek wewnątrz etykiety. "
+        "W sequenceDiagram notatki zapisuj jako Note over A,B: tekst, "
+        "Note right of A: tekst lub Note left of A: tekst; nie używaj samotnego "
+        "note \"tekst\" bez wskazania uczestnika.\n\n"
         + tool_prompt.strip()
     )
     return "\n\n".join(sections)

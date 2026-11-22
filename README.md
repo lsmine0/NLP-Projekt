@@ -1,6 +1,16 @@
 # NLP-Projekt
 Projekt z Przetwarzanie języka naturalnego
 
+## GUI: Markdown i diagramy
+
+GUI używa lokalnie bundlowanych bibliotek Marked, DOMPurify i Mermaid, więc
+renderowanie Markdown i diagramów działa bez połączenia z CDN. Zamknięte bloki
+fenced `mermaid` są renderowane jako diagramy; każdy blok ma przełącznik widoku
+diagramu i kodu źródłowego. Niepoprawny diagram pozostaje dostępny jako kod z
+komunikatem o błędzie, a renderowany Markdown i SVG są sanitizowane. Gdy
+użytkownik prosi o diagram bez wskazania innego formatu, model otrzymuje
+instrukcję, by odpowiedzieć blokiem Mermaid.
+
 ## API bez okna i audio (zadanie #55)
 
 Wymagany Python 3.10 lub nowszy (sprawdzono 3.12). Tryb headless nie wymaga pywebview, mikrofonu, modeli STT/TTS ani MCP. Dotychczasowy desktop/CLI nadal korzysta z `core/main.py` i pełnego `requirements.txt`.
