@@ -14,6 +14,69 @@ DEFAULT_TOOL_TIMEOUT = 10
 DEFAULT_RESERVE_TOKENS = 8000
 
 
+def _ParseToolArguments(raw) -> dict:
+    """Zgoda na argumenty toola: poprawny JSON, dict albo ucięty fragment (#51).
+
+    Strumienie OpenAI-compatible (np. llama.cpp) wysyłają `arguments` kawałkami.
+    Po scaleniu powinien być poprawnym JSONem; gdy model urwał generowanie w
+    połowie obiektu, zamykanie całego turnu błędem jest gorsze niż pusty zestaw
+    argumentów - tool z opcjonalnymi parametrami (inspect_image) dalej działa.
+    """
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not isinstance(raw, str):
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        Logger.printWarning(
+            f"Argumenty toola nie są poprawnym JSONem ({text[:40]!r}) - traktuję jako {{}}."
+        )
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _MergeToolCallFragment(slots: dict, order: list, fragment) -> None:
+    """Scal jeden fragment strumienia `tool_calls` w cały call (#51).
+
+    Kawałki tego samego wywołania przychodzą z tym samym `index`, a id/nazwa są
+    tylko w pierwszym z nich. Traktowanie każdego fragmentu jako osobnego toola
+    (stare `tool_calls.extend(tc)`) dawało ucięty JSON i `json.JSONDecodeError`
+    - cały turn ginął jako "Błąd modelu.".
+    """
+    function = getattr(fragment, "function", None)
+    name_piece = (getattr(function, "name", "") or "") if function is not None else ""
+    args_piece = (getattr(function, "arguments", "") or "") if function is not None else ""
+    if isinstance(args_piece, dict):  # server zwraca obiekt zamiast stringu
+        args_piece = json.dumps(args_piece)
+    call_id = getattr(fragment, "id", None) or ""
+
+    index = getattr(fragment, "index", None)
+    if isinstance(index, bool) or not isinstance(index, int):
+        # Server bez `index`: nowy call rozpoznajemy po id albo nazwie.
+        index = len(order) if (call_id or name_piece) else (order[-1] if order else 0)
+
+    slot = slots.get(index)
+    if slot is None:
+        slots[index] = {
+            "id": call_id or f"call_{index}",
+            "type": "function",
+            "function": {"name": name_piece, "arguments": args_piece},
+        }
+        order.append(index)
+        return
+
+    if call_id and not slot["id"]:
+        slot["id"] = call_id
+    if name_piece:
+        slot["function"]["name"] += name_piece  # nazwa też może być strugana
+    if args_piece:
+        slot["function"]["arguments"] += args_piece
+
+
 class AgentFlow:
     def __init__(
         self,
@@ -258,7 +321,7 @@ class AgentFlow:
                     calls.append({
                         "id": tc.id,
                         "name": fn.name,
-                        "args": json.loads(fn.arguments or "{}"),
+                        "args": _ParseToolArguments(fn.arguments),
                     })
 
             Contx.ContextHandle.Append(
@@ -286,7 +349,10 @@ class AgentFlow:
                 reserve_tokens=self.reserve_tokens,
             )
             answer_parts = []
-            tool_calls = []
+            # #51: kawałki tool_calls scalane po `index` (slots/order), nie w płaską
+            # listę - inaczej arguments przychodzą ucięte i parse crashuje turn.
+            tool_slots: dict[int, dict] = {}
+            tool_order: list[int] = []
             last_chunk = None
             # #51: payload = kopia z data URL; self.context zostaje referencjami (ID).
             for chunk in self.ollama.ChatStream(
@@ -305,24 +371,14 @@ class AgentFlow:
                 if text:
                     yield {"type": "token", "text": text} if as_events else text
                     answer_parts.append(text)
-                tc = getattr(delta, "tool_calls", None)
-                if tc:
-                    tool_calls.extend(tc)
+                fragments = getattr(delta, "tool_calls", None)
+                if fragments:
+                    for fragment in fragments:
+                        _MergeToolCallFragment(tool_slots, tool_order, fragment)
             self._CalibrateTokens(self.context, last_chunk)
             answer = "".join(answer_parts)
-            if tool_calls:
-                tool_call_dicts = []
-                for tc in tool_calls:
-                    fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        tool_call_dicts.append({
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": fn.name or "",
-                                "arguments": fn.arguments or "{}",
-                            },
-                        })
+            tool_call_dicts = [tool_slots[key] for key in tool_order]
+            if tool_call_dicts:
                 Contx.ContextHandle.Append(
                     self.context,
                     {"role": "assistant", "content": answer, "tool_calls": tool_call_dicts},
@@ -331,7 +387,7 @@ class AgentFlow:
                     {
                         "id": tc["id"],
                         "name": tc["function"]["name"],
-                        "args": json.loads(tc["function"]["arguments"] or "{}"),
+                        "args": _ParseToolArguments(tc["function"]["arguments"]),
                     }
                     for tc in tool_call_dicts
                 ]

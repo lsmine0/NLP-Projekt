@@ -330,7 +330,10 @@ class AttachmentStore:
             height=height,
             chat_id=chat_id,
             created_at=_now(),
-            name=Path(name or "").name[:120],
+            # Nazwa tylko do wyświetlenia: odrzuwamy składowe katalogów, także
+            # w stylu Windowsa ("C:\Users\x\zrzut.png"), gdzie Path() na POSIX
+            # nie traktuje backslashu jako separatora.
+            name=str(name or "").replace("\\", "/").rsplit("/", 1)[-1][:120],
         )
         self._write(attachment, data)
         return attachment
