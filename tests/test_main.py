@@ -70,7 +70,8 @@ def test_build_config_file_and_inline_updates(
 def test_main_build_tools_registers_all_tools() -> None:
     tools = app_main.build_tools()
     assert isinstance(tools, ToolHandle)
-    assert len(tools.get_tools_list()) == 18
+    # 18 tools bazowych + 2 obrazowe (#51: inspect_image, list_attachments).
+    assert len(tools.get_tools_list()) == 20
 
 
 def test_build_provider_startup_errors(monkeypatch: pytest.MonkeyPatch) -> None:

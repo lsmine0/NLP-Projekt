@@ -3,10 +3,10 @@ from __future__ import annotations
 import handlers.ContextHandle as Contx
 from core.ModelProvider import ModelProvider, create_provider
 from core.RuntimeConfig import RuntimeConfig
-from handlers.ToolHandle import ToolHandle
+from handlers.ToolHandle import ToolHandle, use_tool_session
 from core import Logger
 import json
-from typing import Optional
+from typing import Callable, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
 
 DEFAULT_TOOL_CHARS = 1024
@@ -27,6 +27,7 @@ class AgentFlow:
         *,
         tool_handle: ToolHandle | None = None,
         provider: ModelProvider | None = None,
+        message_resolver: Optional[Callable[[list], list]] = None,
     ):
         if provider is not None and tool_handle is None:
             tool_handle = provider.ToolsHandle
@@ -58,6 +59,15 @@ class AgentFlow:
         self._token_ratio = 1.0
         self._last_answer: Optional[str] = None
         self._total_tool_calls_count = 0
+
+        # #51 (obrazy/załączniki):
+        # - message_resolver: zamienia referencje {'type':'attachment','id':...} na parts
+        #   image_url z data URL. Wywoływany TYLKO przy budowaniu payloadu, więc w
+        #   self.context nigdy nie lądują base64 ani ścieżki z dysku.
+        # - session_scope: {'chat_id', 'attachment_store'} przekazywane narzędziom
+        #   (tools/ImageTools.py) przez handlers.ToolHandle.current_tool_session().
+        self.message_resolver = message_resolver
+        self.session_scope: Optional[dict] = None
 
         Logger.printInfo(
             f"AgentFlow init: num_ctx={self.num_ctx}, reserve={self.reserve_tokens}, "
@@ -133,6 +143,28 @@ class AgentFlow:
             f"(prompt_tokens={actual_prompt}{comp_info}, estymacja={est})"
         )
 
+    def _ApiMessages(self, messages: list) -> list:
+        """Kopia `messages` gotowa dla API (#51); oryginał NIE jest mutowany.
+
+        Zwraca oryginalną listę, gdy resolver nie jest ustawiony (message text-only).
+        Błąd resolvera (np. AttachmentError – załącznik z innego czatu) propaguje do
+        AgentAdapter, który zamienia go na czytelny event 'error'.
+        """
+        resolver = self.message_resolver
+        if resolver is None:
+            return messages
+        resolved = resolver(messages)
+        return resolved if isinstance(resolved, list) else messages
+
+    def _RunToolWithScope(self, name: str, args: dict) -> str:
+        """Woła tool z zakresem sesji ustawionym w tym samym wątku (#51).
+
+        Wątki ThreadPoolExecutor nie widzą ContextVarów ustawionych w wątku
+        requestowym, dlatego scope musi być ustawiony inside this callable.
+        """
+        with use_tool_session(self.session_scope):
+            return self.tools.execute_tool(name, args)
+
     def _ExecuteToolCalls(self, calls: list) -> bool:
         for call in calls:
             self._total_tool_calls_count += 1
@@ -147,8 +179,9 @@ class AgentFlow:
             )
 
             # ponytail: per-call thread pool for the timeout; fine for a handful of tool calls per run
+            # #51: _RunToolWithScope (nie execute_tool) - setuje session scope w wątku workera.
             with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(self.tools.execute_tool, call["name"], call["args"])
+                fut = ex.submit(self._RunToolWithScope, call["name"], call["args"])
                 try:
                     raw_result = fut.result(timeout=DEFAULT_TOOL_TIMEOUT)
                 except FutTimeout:
@@ -172,7 +205,8 @@ class AgentFlow:
             )
         return False
 
-    def Run(self, user_input: str) -> str:
+    def Run(self, user_input) -> str:
+        """Non-streaming run. `user_input` may be str or list multimodal parts (#51)."""
         self.RefreshModelContext()
         
         self._total_tool_calls_count = 0
@@ -191,13 +225,15 @@ class AgentFlow:
                 ratio=self._token_ratio,
                 reserve_tokens=self.reserve_tokens,
             )
-            messages_sent = self.context
+            # Budżet liczymy na referencjach (taniej), w payload trafia kopia z data URL.
+            api_messages = self._ApiMessages(self.context)
 
             response = self.ollama.Chat(
-                messages=messages_sent,
+                messages=api_messages,
                 max_tokens=self.reserve_tokens,
             )
-            self._CalibrateTokens(messages_sent, response)
+            # Kalibracja ratio po referencjach, nie po megabajtach base64 (#51).
+            self._CalibrateTokens(self.context, response)
 
             message = response.choices[0].message
 
@@ -236,7 +272,8 @@ class AgentFlow:
 
         return self._last_answer or ""
 
-    def RunStream(self, user_input: str, as_events: bool = False):
+    def RunStream(self, user_input, as_events: bool = False):
+        """Streaming run. `user_input` may be str or list multimodal parts (#51)."""
         self.RefreshModelContext()
         self._total_tool_calls_count = 0
         Contx.ContextHandle.Add(self.context, user_input, role="user")
@@ -251,8 +288,9 @@ class AgentFlow:
             answer_parts = []
             tool_calls = []
             last_chunk = None
+            # #51: payload = kopia z data URL; self.context zostaje referencjami (ID).
             for chunk in self.ollama.ChatStream(
-                messages=self.context,
+                messages=self._ApiMessages(self.context),
                 max_tokens=self.reserve_tokens,
                 auto_budget=False,
             ):
