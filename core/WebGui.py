@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from typing import Callable
+import asyncio
 import json
 import re
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -21,6 +23,9 @@ from core.Attachments import Attachment, AttachmentError, AttachmentStore
 from core.AgentAdapter import AgentBase, STTBase, TTSBase, create_agent, create_stt, create_tts
 from core.ChatStore import ChatStore, SettingsStore
 from core.RuntimeConfig import RuntimeConfig
+from core.Interactions import InteractionBroker
+from core.AuditLog import AuditLog
+from core.ToolPolicy import DEFAULT_RISK_POLICIES, RISK_LABELS, normalize_policy
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from contextlib import asynccontextmanager
@@ -42,6 +47,8 @@ attachment_store: AttachmentStore = None  # type: ignore[assignment]
 agent_factory: Callable[[dict], AgentBase] = create_agent
 audio_enabled: bool = True
 sessions: dict[str, AgentBase] = {}
+interaction_broker: InteractionBroker = None  # type: ignore[assignment]
+audit_log: AuditLog = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -55,6 +62,8 @@ class ApiState:
     audio_enabled: bool
     runtime: object
     sessions: dict = field(default_factory=dict)
+    interaction_broker: InteractionBroker | None = None
+    audit_log: AuditLog | None = None
 
 
 def _state(request=None):
@@ -63,7 +72,9 @@ def _state(request=None):
     return SimpleNamespace(store=store, settings_store=settings_store, stt=stt,
                            tts=tts, attachment_store=attachment_store,
                            agent_factory=agent_factory, audio_enabled=audio_enabled,
-                           sessions=sessions, runtime=None)
+                           sessions=sessions, runtime=None,
+                           interaction_broker=interaction_broker,
+                           audit_log=audit_log)
 
 
 
@@ -85,6 +96,21 @@ class MermaidSourceUpdateRequest(BaseModel):
 
 class SpeakRequest(BaseModel):
     text: str
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str
+
+
+class QuestionAnswerRequest(BaseModel):
+    answer: str = ""
+    option_index: int | None = None
+    cancelled: bool = False
+
+
+class ToolPoliciesRequest(BaseModel):
+    policies: dict[str, str] = Field(default_factory=dict)
+    risk_policies: dict[str, str] = Field(default_factory=dict)
 
 
 def error(message: str, status: int = 400, code: str | None = None) -> JSONResponse:
@@ -160,9 +186,13 @@ def run_cleanup(request: Request = None) -> None:
     attachment_store = state.attachment_store
     sessions = state.sessions
     cfg = settings_store.get()
+    broker = state.interaction_broker
     for chat_id in store.cleanup(cfg["max_chats"], cfg["max_age_days"]):
         sessions.pop(chat_id, None)
         attachment_store.delete_for_chat(chat_id)
+        if broker is not None:
+            broker.cancel_chat(chat_id)
+            broker.forget_chat(chat_id)
     attachment_store.cleanup_pending()
 
 
@@ -209,7 +239,8 @@ def get_agent(chat_id: str, request: Request = None) -> AgentBase:
 
 @router.get("/")
 def index() -> FileResponse:
-    return FileResponse(FRONTEND)
+    # Desktop WebView must not keep a stale JS/HTML bundle after an upgrade.
+    return FileResponse(FRONTEND, headers={"Cache-Control": "no-store"})
 
 
 # Endpointy ustawień i listy modeli
@@ -232,6 +263,8 @@ def put_settings(changes: dict, request: Request = None):
                 return error('Konfiguracja modelu API jest ustawiana przy starcie procesu (NLP_ENDPOINT/NLP_MODEL).')
     if any(k.lower() in ('api_key', 'openai_api_key', 'ollama_api_key', 'authorization', 'token') for k in changes):
         return error('Klucze API należy ustawić w środowisku procesu, nie w settings.json.')
+    if any(key in changes for key in ('tool_policies', 'tool_risk_policies')):
+        return error('Polityki narzędzi zmieniaj przez PUT /api/tools/policies.')
     if 'ollama_endpoint' in changes:
         try:
             RuntimeConfig(endpoint=str(changes['ollama_endpoint']))
@@ -244,6 +277,9 @@ def put_settings(changes: dict, request: Request = None):
     settings = settings_store.update(changes)
     if any(key in changes for key in ("ollama_endpoint", "ollama_model", "system_prompt")):
         sessions.clear()
+        if state.interaction_broker is not None:
+            state.interaction_broker.cancel_all_pending()
+            state.interaction_broker.clear_session_allows()
     if "ollama_endpoint" in changes or "ollama_model" in changes:
         if state.runtime is not None and not state.runtime.config_locked:
             state.runtime.provider = state.runtime.provider_factory(settings)
@@ -295,6 +331,10 @@ def delete_chat(chat_id: str, request: Request = None):
         return error("Nie znaleziono czatu.", 404)
     sessions.pop(chat_id, None)
     attachment_store.delete_for_chat(chat_id)
+    broker = state.interaction_broker
+    if broker is not None:
+        broker.cancel_chat(chat_id)
+        broker.forget_chat(chat_id)
     return {"ok": True}
 
 
@@ -403,36 +443,289 @@ def chat(request: ChatRequest, http_request: Request = None):
             "vision_unsupported",
         )
 
-    def events():
+    run_id = uuid.uuid4().hex
+    flow = getattr(agent, "flow", None)
+    if flow is not None:
+        flow.run_id = run_id
+        flow._run_id_preassigned = True
+
+    broker = state.interaction_broker
+
+    def tool_metadata(event_type, event, collected):
+        name = event.get("tool")
+        if not name:
+            return
+        fields = {
+            "name": name,
+            "source": event.get("source") or "builtin",
+            "server": event.get("server"),
+            "risk": list(event.get("risk") or []),
+            "status": "running" if event_type == "tool_start" else event.get("status", "ok"),
+        }
+        if event.get("code"):
+            fields["code"] = event["code"]
+        if event_type == "tool_start":
+            collected.append(fields)
+            return
+        for item in reversed(collected):
+            if item.get("name") == name and item.get("status") == "running":
+                item.update(fields)
+                return
+        collected.append(fields)
+
+    async def events():
         yield json.dumps({"type": "chat_id", "id": chat_id}) + "\n"
         store.append(chat_id, "user", message, attachments=[a.id for a in bound])
         reply: list[str] = []
         thinking: list[str] = []
+        tools: list[dict] = []
         completed = False
-        # bez załączników wołamy stream(message) - agenci spoza AgentBase nie muszą znać nowego parametru
+
         stream = agent.stream(message, bound) if bound else agent.stream(message)
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel = object()
+        stop_emitting = threading.Event()
+
+        def emit(item) -> None:
+            if stop_emitting.is_set():
+                return
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                pass
+
+        def worker() -> None:
+            try:
+                for event in stream:
+                    emit(event)
+            except Exception:
+                Logger.printError("Provider modelu zgłosił błąd.")
+                emit({"type": "error", "message": "Błąd modelu."})
+            finally:
+                emit(sentinel)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
         try:
-            for event in stream:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    disconnected = False
+                    if http_request is not None:
+                        try:
+                            disconnected = await http_request.is_disconnected()
+                        except Exception:
+                            disconnected = False
+                    if disconnected:
+                        if broker is not None:
+                            broker.cancel_run(run_id)
+                        break
+                    continue
+
+                if event is sentinel:
+                    completed = True
+                    break
+
                 if event["type"] == "thinking":
                     thinking.append(event["text"])
                 elif event["type"] == "token":
                     reply.append(event["text"])
+                elif event["type"] == "answer_reset":
+                    # The model described a tool call as text; discard that draft
+                    # before the corrective tool_calls response.
+                    reply.clear()
+                    thinking.clear()
+                elif event["type"] in ("tool_start", "tool_result"):
+                    tool_metadata(event["type"], event, tools)
                 yield json.dumps(event, ensure_ascii=False) + "\n"
-            completed = True
-            yield json.dumps({"type": "done"}) + "\n"
+
+                if http_request is not None:
+                    try:
+                        if await http_request.is_disconnected():
+                            if broker is not None:
+                                broker.cancel_run(run_id)
+                            break
+                    except Exception:
+                        pass
+
+            if completed:
+                yield json.dumps({"type": "done"}) + "\n"
         finally:
+            stop_emitting.set()
+            if not completed:
+                if broker is not None:
+                    broker.cancel_run(run_id)
+                # The worker may still be unwinding after a client disconnect.
+                # Drop the session so the next message cannot mutate it concurrently.
+                if state.sessions.get(chat_id) is agent:
+                    state.sessions.pop(chat_id, None)
+            if flow is not None:
+                flow._run_id_preassigned = False
+            # Persist the partial/final answer even if the client disconnected
+            # and Starlette is closing this async generator.
             try:
-                if reply or thinking or not completed:
+                if reply or thinking or tools or not completed:
                     text = "".join(reply)
                     if thinking and "<think>" not in text:
                         text = f"<think>{''.join(thinking)}</think>\n{text}"
                     if not completed:
                         text = f"{text}\n<stopped/>".strip()
-                    store.append(chat_id, "assistant", text)
+                    stored_tools = [
+                        {**item, "status": "error" if item.get("status") == "running" else item.get("status")}
+                        for item in tools
+                    ]
+                    store.append(chat_id, "assistant", text, tools=stored_tools)
             except KeyError:
+                pass
+            try:
+                await asyncio.wait_for(asyncio.to_thread(thread.join, 2.0), timeout=2.5)
+            except BaseException:
                 pass
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
+
+
+# Narzędzia: publiczne metadane ryzyka/polityk i edycja allow/ask/deny
+def _runtime_tool_handle(request: Request = None):
+    state = _state(request)
+    runtime = state.runtime
+    return getattr(runtime, "tool_handle", None) if runtime is not None else None
+
+
+def _resolve_status(code: str) -> tuple[int, str]:
+    if code == "ok":
+        return 200, "ok"
+    if code == "not_found":
+        return 404, "Nie znaleziono oczekującej interakcji."
+    if code == "expired":
+        return 410, "Oczekująca interakcja wygasła."
+    if code == "already_resolved":
+        return 409, "Ta interakcja została już rozstrzygnięta."
+    if code == "cancelled":
+        return 409, "Ta interakcja została anulowana."
+    return 400, "Nieprawidłowa decyzja."
+
+
+@router.get("/api/tools")
+def list_tools(request: Request = None):
+    state = _state(request)
+    handle = _runtime_tool_handle(request)
+    if handle is None:
+        return error("Rejestr narzędzi jest niedostępny.", 503)
+    runtime = state.runtime
+    config = getattr(runtime, "config", None)
+    return {
+        "tools": handle.public_tools(),
+        "risk_labels": list(RISK_LABELS),
+        "risk_policy_defaults": dict(DEFAULT_RISK_POLICIES),
+        "allowed_directories": [
+            str(path) for path in getattr(config, "allowed_directories", ()) or ()
+        ],
+        "approval_timeout": getattr(config, "approval_timeout", 300),
+    }
+
+
+@router.put("/api/tools/policies")
+def put_tool_policies(request: ToolPoliciesRequest, http_request: Request = None):
+    state = _state(http_request)
+    handle = _runtime_tool_handle(http_request)
+    if handle is None:
+        return error("Rejestr narzędzi jest niedostępny.", 503)
+
+    known = {item["name"] for item in handle.public_tools()}
+    normalized: dict[str, str] = {}
+    for name, value in (request.policies or {}).items():
+        if name not in known:
+            return error(f"Nieznane narzędzie: {name}.", 400, "unknown_tool")
+        try:
+            policy = normalize_policy(value)
+        except ValueError as exc:
+            return error(str(exc), 400, "invalid_policy")
+        if policy is not None:
+            normalized[name] = policy
+
+    risk_policies: dict[str, str] = {}
+    for label, value in (request.risk_policies or {}).items():
+        if label not in RISK_LABELS:
+            return error(f"Nieznana etykieta ryzyka: {label}.", 400, "invalid_risk")
+        try:
+            policy = normalize_policy(value)
+        except ValueError as exc:
+            return error(str(exc), 400, "invalid_policy")
+        if policy is not None:
+            risk_policies[label] = policy
+
+    settings = state.settings_store.update(
+        {"tool_policies": normalized, "tool_risk_policies": risk_policies}
+    )
+    handle.set_policy_config(
+        policy_overrides=normalized, risk_policies=risk_policies
+    )
+    return {
+        "ok": True,
+        "tools": handle.public_tools(),
+        "tool_policies": settings.get("tool_policies", {}),
+        "tool_risk_policies": settings.get("tool_risk_policies", {}),
+    }
+
+
+@router.post("/api/approvals/{approval_id}")
+def resolve_approval(
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    request: Request = None,
+):
+    state = _state(request)
+    broker = state.interaction_broker
+    if broker is None:
+        return error("Zatwierdzenia nie są dostępne.", 503)
+    result = broker.resolve_approval(approval_id, body.decision)
+    if not result.ok:
+        status, message = _resolve_status(result.code)
+        return error(message, status, result.code)
+    return {"ok": True, "decision": body.decision}
+
+
+@router.post("/api/questions/{question_id}")
+def resolve_question(
+    question_id: str,
+    body: QuestionAnswerRequest,
+    request: Request = None,
+):
+    state = _state(request)
+    broker = state.interaction_broker
+    if broker is None:
+        return error("Pytania do użytkownika nie są dostępne.", 503)
+
+    pending = broker.pending(question_id)
+    if pending is None or pending.kind != "question":
+        return error("Nie znaleziono oczekującego pytania.", 404, "not_found")
+
+    if body.cancelled:
+        answer = {"cancelled": True}
+    else:
+        options = list(pending.payload.get("options") or [])
+        option = None
+        if body.option_index is not None:
+            if not isinstance(body.option_index, int) or not 0 <= body.option_index < len(options):
+                return error("Nieprawidłowy numer opcji.", 400, "invalid_option")
+            option = options[body.option_index]
+        if option is None and pending.payload.get("allow_custom") is False:
+            return error("Ta odpowiedź nie pozwala na własny tekst.", 400, "custom_not_allowed")
+        answer_text = (body.answer or "").strip() or (option or "")
+        if not answer_text:
+            return error("Odpowiedź nie może być pusta.", 400, "empty_answer")
+        answer = {"answer": answer_text}
+        if option is not None:
+            answer["option"] = option
+
+    result = broker.resolve_question(question_id, answer)
+    if not result.ok:
+        status, message = _resolve_status(result.code)
+        return error(message, status, result.code)
+    return {"ok": True}
 
 
 @router.post("/api/chats/{chat_id}/mermaid/repair")
@@ -580,6 +873,9 @@ def create_app(*, runtime=None, runtime_factory=None):
                                   or AttachmentStore(current.settings_store.path.parent / 'attachments')),
                 agent_factory=current.agent_factory, audio_enabled=current.audio_enabled,
                 runtime=current,
+                interaction_broker=(getattr(current, 'interaction_broker', None)
+                                    or InteractionBroker()),
+                audit_log=(getattr(current, 'audit_log', None) or AuditLog(None)),
             )
             application.state.api = state
             # Cleanup uses this app's state, not the compatibility globals.

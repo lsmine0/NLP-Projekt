@@ -10,6 +10,13 @@ import requests
 from core.AgentFlow import AgentFlow
 from tools.ToolBuilder import build_tools
 
+ALLOW_RISK = {
+    "read": "allow",
+    "write": "allow",
+    "destructive": "allow",
+    "external": "allow",
+}
+
 
 def execute(tools, name, **arguments):
     result = json.loads(tools.execute_tool(name, arguments))
@@ -20,7 +27,7 @@ def execute(tools, name, **arguments):
 
 
 def test_file_tools(tmp_path):
-    tools = build_tools(math=False, web=False)
+    tools = build_tools(math=False, web=False, risk_policies=ALLOW_RISK)
     source = str(tmp_path / "notatka.txt")
     destination = str(tmp_path / "przeniesiona.txt")
     directory = str(tmp_path)
@@ -56,7 +63,7 @@ def test_math_tools(name, arguments, field, expected):
 
 
 def test_web_tools():
-    tools = build_tools(files=False, math=False)
+    tools = build_tools(files=False, math=False, risk_policies=ALLOW_RISK)
     url = "https://example.com"
     with patch("tools.WebSearchTools.DDGS") as search:
         search.return_value.text.return_value = [{"title": "Przykład", "href": url}]
@@ -78,8 +85,8 @@ def test_web_tools():
 
 def test_builder_and_shared_registry():
     assert (build_tools(files=False, math=False, web=False, code=False,
-                        images=False).get_tools_list() == [])
-    assert len(build_tools().get_tools_list()) == 20
+                        images=False, interactions=False).get_tools_list() == [])
+    assert len(build_tools().get_tools_list()) == 21
     tools = build_tools(files=False, web=False)
     flow = AgentFlow(tool_handle=tools)
     assert flow.ollama.ToolsHandle is flow.tools is tools
@@ -92,7 +99,7 @@ def test_builder_and_shared_registry():
         assert failure.keys() == {"success", "error", "result"}
         assert failure["success"] is False
         assert failure["error"]
-        assert failure["result"] is None
+        assert failure["result"] is None or failure["result"].get("denied") is True
 
 
 @pytest.mark.skipif(not os.environ.get("OLLAMA_TEST_MODEL"), reason="Ustaw OLLAMA_TEST_MODEL.")
@@ -115,7 +122,7 @@ def test_ollama_reads_notatka(tmp_path, monkeypatch, stream):
     flow.ollama.client = flow.ollama.client.with_options(timeout=90, max_retries=0)
     assert flow.ollama.SetModel(os.environ["OLLAMA_TEST_MODEL"])
 
-    with patch.object(tools, "execute_tool", wraps=tools.execute_tool) as executed:
+    with patch.object(tools, "execute_prepared", wraps=tools.execute_prepared) as executed:
         prompt = "odczytaj notatka.txt"
         if stream:
             events = flow.RunStream(prompt, as_events=True)
@@ -128,8 +135,9 @@ def test_ollama_reads_notatka(tmp_path, monkeypatch, stream):
             answer = flow.Run(prompt)
 
     assert any(
-        name == "read_file" and Path(arguments["path"]).resolve() == tmp_path / "notatka.txt"
-        for name, arguments in (call.args for call in executed.call_args_list)
+        prepared.name == "read_file"
+        and Path(prepared.arguments["path"]).resolve() == tmp_path / "notatka.txt"
+        for prepared in (call.args[0] for call in executed.call_args_list)
     )
     outputs = [json.loads(msg["content"]) for msg in flow.context if msg["role"] == "tool"]
     assert any(result["success"] and result["result"]["content"] == marker for result in outputs)

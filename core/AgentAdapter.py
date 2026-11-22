@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from core.Attachments import Attachment
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think>.*\Z", re.DOTALL)
 _MERMAID_REQUEST_RE = re.compile(r"\b(?:mermaid|flowchart|diagram\w*)\b", re.IGNORECASE)
 _DIAGRAM_CREATION_RE = re.compile(
     r"^\s*(?:(?:please|can you|could you|would you)\s+)?"
@@ -89,6 +90,8 @@ class OllamaAgent(AgentBase):
         provider: ModelProvider | None = None,
         attachment_store=None,
         chat_id: str | None = None,
+        interaction_broker=None,
+        audit_log=None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -105,6 +108,8 @@ class OllamaAgent(AgentBase):
             system_prompt=self.system_prompt,
             tool_handle=self.tool_handle,
             provider=provider,
+            interaction_broker=interaction_broker,
+            audit_log=audit_log,
         )
         self.handler: ModelProvider = self.flow.ollama
         self.history: list[dict] = self.flow.context
@@ -208,15 +213,18 @@ class OllamaAgent(AgentBase):
         self.reset()
         # ChatStore zapisuje odpowiedź razem z <think>...</think> (do wyświetlenia w GUI);
         # do modelu stary reasoning nie wraca - zjadałby kontekst przy każdej wiadomości.
-        self.flow.context.extend(
-            ContextHandle.Create(
-                _THINK_RE.sub("", message["content"]).strip()
-                if message["role"] == "assistant" else message["content"],
-                message["role"],
-            )
-            for message in messages
-            if message.get("role") in ("user", "assistant")
-        )
+        # Puste assistanty (np. po turze zakończonej tylko thinkingiem) są pomijane,
+        # żeby nie zatruwać kolejnych pytań.
+        for message in messages:
+            role = message.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = message.get("content", "")
+            if role == "assistant":
+                content = _THINK_OPEN_RE.sub("", _THINK_RE.sub("", content)).strip()
+                if not content:
+                    continue
+            self.flow.context.append(ContextHandle.Create(content, role))
         self.history = self.flow.context
 
     def _get_handler(self) -> ModelProvider:
@@ -268,7 +276,7 @@ class OllamaAgent(AgentBase):
 
         snapshot = list(self.flow.context)
         try:
-if _MERMAID_REQUEST_RE.search(user_text):
+            if _MERMAID_REQUEST_RE.search(user_text):
                 if _is_diagram_creation_request(user_text):
                     source = self._generate_mermaid_source(user_text)
                     answer = f"```mermaid\n{source}\n```"
@@ -466,18 +474,30 @@ def _missing_audio_dependencies(*modules: str) -> list[str]:
 
 
 # Funkcje tworzące instancje (miejsce podpięcia AgentLoop, STTHandle, TTSHandle)
-def create_agent(settings: dict, *, tool_handle: ToolHandle | None = None, provider: ModelProvider | None = None) -> AgentBase:
+def create_agent(
+    settings: dict,
+    *,
+    tool_handle: ToolHandle | None = None,
+    provider: ModelProvider | None = None,
+    interaction_broker=None,
+    audit_log=None,
+) -> AgentBase:
     tool_prompt = build_tool_prompt(tool_handle, settings)
     system_prompt = build_system_prompt(
         settings.get("system_prompt"), tool_prompt, settings
     )
     Logger.printInfo(f"Finalny prompt systemowy:\n{system_prompt}")
+    optional = {
+        "interaction_broker": interaction_broker,
+        "audit_log": audit_log,
+        **({"provider": provider} if provider is not None else {}),
+    }
     return OllamaAgent(
         settings["ollama_endpoint"],
         settings["ollama_model"],
         system_prompt=system_prompt,
         tool_handle=tool_handle,
-        **({"provider": provider} if provider is not None else {}),
+        **{key: value for key, value in optional.items() if value is not None},
     )
 
 

@@ -147,6 +147,26 @@ def test_environment_configuration_and_secret_repr(tmp_path):
     assert 'secret-key' not in repr(config)
 
 
+
+def test_allowed_directories_and_approval_timeout_from_env(tmp_path):
+    extra = tmp_path / 'extra'
+    extra.mkdir()
+    config = RuntimeConfig.from_env(environ={
+        'NLP_WORKSPACE': str(tmp_path),
+        'NLP_ALLOWED_DIRS': str(extra),
+        'NLP_APPROVAL_TIMEOUT': '12.5',
+        'NLP_ENDPOINT': 'http://127.0.0.1:11434/v1',
+    })
+    assert config.allowed_directories == (tmp_path.resolve(), extra.resolve())
+    assert config.approval_timeout == 12.5
+
+    # Katalog może powstać później; istniejący plik nie może być katalogiem.
+    RuntimeConfig(workspace=tmp_path, allowed_directories=(tmp_path / 'missing',))
+    not_a_dir = tmp_path / 'file.txt'
+    not_a_dir.write_text('x', encoding='utf-8')
+    with pytest.raises(ValueError):
+        RuntimeConfig(workspace=tmp_path, allowed_directories=(not_a_dir,))
+
 @pytest.mark.parametrize('timeout', [0, -1, float('nan'), float('inf')])
 def test_invalid_timeout(timeout):
     with pytest.raises(ValueError):
@@ -184,7 +204,10 @@ def test_startup_failure_closes_owned_runtime(tmp_path, monkeypatch):
 def test_workspace_is_bound_without_changing_process_cwd(tmp_path):
     from tools.ToolBuilder import build_tools
     cwd = Path.cwd()
-    tools = build_tools(files=True, math=False, web=False, code=False, workspace_dir=tmp_path)
+    tools = build_tools(
+        files=True, math=False, web=False, code=False, workspace_dir=tmp_path,
+        risk_policies={"write": "allow", "destructive": "allow"},
+    )
     result = json.loads(tools.execute_tool('create_file', {'path': 'sample.txt', 'content': 'ok'}))
     assert result['success']
     assert (tmp_path / 'sample.txt').read_text() == 'ok'

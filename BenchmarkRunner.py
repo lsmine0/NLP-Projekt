@@ -12,6 +12,15 @@ import time
 from tools.FileTools import AVAILABLE_FILE_TOOLS
 from tools.ToolBuilder import build_tools
 
+# Benchmark uruchamia narzędzia w świeżym katalogu tymczasowym pod własną
+# kontrolą; nie zawieszaj go na interaktywnych zgodach.
+BENCHMARK_RISK_POLICIES = {
+    "read": "allow",
+    "write": "allow",
+    "destructive": "allow",
+    "external": "allow",
+}
+
 ROOT = Path(__file__).resolve().parent
 SYSTEM_PROMPT = ("Odpowiadaj po polsku. Katalog testowy to bieżący katalog roboczy; używaj ścieżek "
                  "względnych (np. '.' albo 'notatka.txt'). Użytkownik ma zwykłe uprawnienia. "
@@ -41,7 +50,7 @@ def load_cases(paths):
 def dispatch(call, directory, tool_handle=None):
     """Execute registered file tools with paths constrained to fresh fixtures."""
     if tool_handle is None:
-        tool_handle = build_tools(math=False, web=False)
+        tool_handle = build_tools(math=False, web=False, interactions=False, risk_policies=BENCHMARK_RISK_POLICIES)
     try:
         if call['name'] not in AVAILABLE_FILE_TOOLS:
             raise ValueError("Nieznane narzędzie")
@@ -118,7 +127,7 @@ def run_case(handler, case, timeout=120, max_rounds=6):
         return result
     tool_handle = getattr(handler, 'ToolsHandle', None)
     if tool_handle is None:
-        tool_handle = build_tools(math=False, web=False)
+        tool_handle = build_tools(math=False, web=False, interactions=False, risk_policies=BENCHMARK_RISK_POLICIES)
     started = None
     with tempfile.TemporaryDirectory(prefix='nlp-benchmark-') as tmp:
         directory = Path(tmp).resolve()
@@ -209,7 +218,7 @@ def main():
         from handlers.OllamaHandle import OllamaHandler
         from core import Logger
         Logger.VERBOSE = 0
-        handler = OllamaHandler(args.endpoint, tool_handle=build_tools(math=False, web=False))
+        handler = OllamaHandler(args.endpoint, tool_handle=build_tools(math=False, web=False, interactions=False, risk_policies=BENCHMARK_RISK_POLICIES))
         handler.client = handler.client.with_options(timeout=args.timeout, max_retries=0)
         if not handler.SetModel(args.model):
             raise RuntimeError('Wybrany model nie jest dostępny')

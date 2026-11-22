@@ -13,8 +13,10 @@ class RuntimeConfig:
     api_key: str = field(default='ollam', repr=False)
     request_timeout: float = 60.0
     workspace: Path = field(default_factory=Path.cwd)
+    allowed_directories: tuple[Path, ...] = ()
     data_dir: Path = field(default_factory=lambda: Path('data'))
     provider_name: str = 'ollama'
+    approval_timeout: float = 300.0
 
     def __post_init__(self):
         parsed = urlsplit(self.endpoint)
@@ -23,11 +25,26 @@ class RuntimeConfig:
             raise ValueError('Endpoint musi być adresem HTTP(S) bez danych logowania, query i fragmentu.')
         if not math.isfinite(self.request_timeout) or self.request_timeout <= 0:
             raise ValueError('Timeout musi być dodatnią, skończoną liczbą.')
+        if not math.isfinite(self.approval_timeout) or self.approval_timeout <= 0:
+            raise ValueError('Timeout zatwierdzeń musi być dodatnią, skończoną liczbą.')
         if self.provider_name not in ('ollama', 'local', 'openai'):
             raise ValueError('Nieobsługiwany provider.')
         if self.provider_name == 'openai' and self.api_key == 'ollam':
             raise ValueError('Brak klucza API (OPENAI_API_KEY).')
-        object.__setattr__(self, 'workspace', Path(self.workspace).expanduser().resolve())
+        workspace = Path(self.workspace).expanduser().resolve()
+        object.__setattr__(self, 'workspace', workspace)
+        directories: list[Path] = [workspace]
+        for raw in self.allowed_directories or ():
+            path = Path(raw).expanduser()
+            try:
+                resolved = path.resolve(strict=False)
+            except OSError as exc:
+                raise ValueError(f'Nieprawidłowy dozwolony katalog: {path}') from exc
+            if path.exists() and not resolved.is_dir():
+                raise ValueError(f'Dozwolona ścieżka nie jest katalogiem: {path}')
+            if resolved not in directories:
+                directories.append(resolved)
+        object.__setattr__(self, 'allowed_directories', tuple(directories))
         object.__setattr__(self, 'data_dir', Path(self.data_dir).expanduser().resolve())
 
     @classmethod
@@ -40,6 +57,12 @@ class RuntimeConfig:
             api_key=env.get('OPENAI_API_KEY') or env.get('OLLAMA_API_KEY') or 'ollam',
             request_timeout=float(env.get('NLP_REQUEST_TIMEOUT', '60')),
             workspace=Path(env.get('NLP_WORKSPACE') or Path.cwd()),
+            allowed_directories=tuple(
+                Path(item.strip())
+                for item in env.get('NLP_ALLOWED_DIRS', '').split(os.pathsep)
+                if item.strip()
+            ),
             data_dir=Path(env.get('CHAT_DATA_DIR') or Path(__file__).resolve().parents[1] / 'data'),
             provider_name=provider_name or env.get('NLP_PROVIDER', 'ollama'),
+            approval_timeout=float(env.get('NLP_APPROVAL_TIMEOUT', '300')),
         )

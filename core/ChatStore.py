@@ -89,12 +89,20 @@ class ChatStore:
 
     # attachments: lista ID z core/Attachments.py (w JSON czatu nie trzymamy danych obrazu)
     def append(
-        self, chat_id: str, role: str, content: str, attachments: list[str] | None = None
+        self,
+        chat_id: str,
+        role: str,
+        content: str,
+        attachments: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> dict:
         chat = self.get(chat_id)
         message = {"role": role, "content": content}
         if attachments:
             message["attachments"] = list(attachments)
+        if tools:
+            # Presentation metadata only (name/source/risk/status), never arguments.
+            message["tools"] = list(tools)
         chat["messages"].append(message)
         chat["updated_at"] = _now()
         if role == "user" and chat["title"] == DEFAULT_TITLE:
@@ -177,6 +185,8 @@ class SettingsStore:
             "tts_sink_device": None,
             "theme": "dark",
             "show_history": True,
+            "tool_policies": {},
+            "tool_risk_policies": {},
         }
 
     def get(self) -> dict:

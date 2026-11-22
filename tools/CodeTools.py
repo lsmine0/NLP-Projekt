@@ -9,6 +9,8 @@ wymaga jawnej zgody użytkownika po stronie hosta.
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -212,6 +214,22 @@ def _build_run_result(
     return result
 
 
+_SENSITIVE_ENV_RE = re.compile(
+    r"(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTHORIZATION|"
+    r"PRIVATE[_-]?KEY|^NLP_)",
+    re.IGNORECASE,
+)
+
+
+def _subprocess_env() -> dict[str, str]:
+    """Do not pass provider credentials from the host process to generated code."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not _SENSITIVE_ENV_RE.search(key)
+    }
+
+
 def _execute_subprocess(
     cmd: list[str], cwd: Path, timeout_val: float, max_output_chars: int
 ) -> dict[str, Any]:
@@ -224,6 +242,7 @@ def _execute_subprocess(
             encoding="utf-8",
             errors="replace",
             timeout=timeout_val,
+            env=_subprocess_env(),
         )
     except subprocess.TimeoutExpired as error:
         return _build_run_result(
@@ -367,6 +386,8 @@ def register_code_tools(
         },
         required=["path", "replacement"],
         function=_edit_file_tool,
+        risk=("write", "destructive"),
+        path_args=("path",),
     )
     tool_handle.create_tool(
         name="run_python",
@@ -385,4 +406,5 @@ def register_code_tools(
         },
         required=["code"],
         function=_run_python_tool,
+        risk=("write", "destructive"),
     )

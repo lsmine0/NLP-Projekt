@@ -71,8 +71,8 @@ def test_build_config_file_and_inline_updates(
 def test_main_build_tools_registers_all_tools() -> None:
     tools = app_main.build_tools()
     assert isinstance(tools, ToolHandle)
-    # 18 tools bazowych + 2 obrazowe (#51: inspect_image, list_attachments).
-    assert len(tools.get_tools_list()) == 20
+    # 18 tools bazowych + 2 obrazowe (#51) + ask_user.
+    assert len(tools.get_tools_list()) == 21
 
 
 def test_build_provider_startup_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,6 +178,7 @@ def test_webgui_serves_locally_bundled_markdown_libraries() -> None:
     client = TestClient(WebGui.app)
     page = client.get("/")
     assert page.status_code == 200
+    assert page.headers.get("cache-control") == "no-store"
     assert '/vendor/marked.min.js' in page.text
     assert '/vendor/purify.min.js' in page.text
     assert '/vendor/mermaid.min.js' in page.text

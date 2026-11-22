@@ -113,6 +113,7 @@ def test_tresc_artykulu():
 @test("Wywołanie pobierania strony przez ToolHandle.execute_tool")
 def test_wywolanie_agenta():
     tools = ToolHandle()
+    tools.configure_security(risk_policies={"external": "allow"})
     register_web_search_tools(tools)
     response = falszywa_odpowiedz(b"<article>Test pobierania</article>", "text/html")
     with patch("tools.WebSearchTools.requests.get", return_value=response):
