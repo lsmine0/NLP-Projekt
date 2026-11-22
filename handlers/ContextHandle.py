@@ -4,6 +4,12 @@ import json
 import math
 from typing import Callable, List, Optional, Tuple
 
+# #51 (obrazy): heurystyka chars/4 nie ma sensu dla base64 – 1 MB blobu
+# "tokenizowałoby" się jako ~350k tokenów, a encoder wizualny kosztuje rzędu tysiąca.
+# W kontekście agenta trzymamy wyłącznie referencje załącznika
+# {'type': 'attachment', 'id': ...}, więc liczymy stały koszt per obraz (#51),
+# nie długość payloadu materializowanego dopiero przy budowaniu zapytania.
+ATTACHMENT_TOKENS = 1024
 
 class ContextHandle:
 
@@ -50,11 +56,41 @@ class ContextHandle:
         return max(1, math.ceil(len(text) / 4))
 
     @staticmethod
+    def ContentTokens(content) -> int:
+        """Tokeny treści: str albo lista parts multimodalnych (#51).
+
+        Parts `text` liczymy po znakach, `attachment`/`image_url` jako
+        ATTACHMENT_TOKENS (referencja w kontekście i data URL po resolve() kosztują
+        tyle samo dla budżetu – obraz w zapytaniu jest jeden).
+        """
+        if content is None:
+            return 0
+        if isinstance(content, str):
+            return ContextHandle.CountTokens(content)
+        if isinstance(content, list):
+            total = 0
+            for part in content:
+                if not isinstance(part, dict):
+                    total += ContextHandle.CountTokens(str(part))
+                    continue
+                part_type = (part.get("type") or "").lower()
+                if part_type in ("attachment", "image_url", "image"):
+                    total += ATTACHMENT_TOKENS
+                elif part_type == "text":
+                    total += ContextHandle.CountTokens(part.get("text") or "")
+                else:
+                    total += ContextHandle.CountTokens(
+                        json.dumps(part, ensure_ascii=False)
+                    )
+            return total
+        return ContextHandle.CountTokens(str(content))
+
+    @staticmethod
     def MessageTokens(message: dict) -> int:
-        """Tokeny wiadomości + narzuty."""
+        """Tokeny wiadomości + narzuty (multimodalna treść liczona per part)."""
         tokens = 5
         if message.get("content"):
-            tokens += ContextHandle.CountTokens(message["content"])
+            tokens += ContextHandle.ContentTokens(message["content"])
         for tc in message.get("tool_calls") or []:
             fn = tc.get("function") or {}
             tokens += ContextHandle.CountTokens(fn.get("name") or "")

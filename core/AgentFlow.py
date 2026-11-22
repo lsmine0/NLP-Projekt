@@ -3,15 +3,78 @@ from __future__ import annotations
 import handlers.ContextHandle as Contx
 from core.ModelProvider import ModelProvider, create_provider
 from core.RuntimeConfig import RuntimeConfig
-from handlers.ToolHandle import ToolHandle
+from handlers.ToolHandle import ToolHandle, use_tool_session
 from core import Logger
 import json
-from typing import Optional
+from typing import Callable, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
 
 DEFAULT_TOOL_CHARS = 1024
 DEFAULT_TOOL_TIMEOUT = 10
 DEFAULT_RESERVE_TOKENS = 8000
+
+
+def _ParseToolArguments(raw) -> dict:
+    """Zgoda na argumenty toola: poprawny JSON, dict albo ucięty fragment (#51).
+
+    Strumienie OpenAI-compatible (np. llama.cpp) wysyłają `arguments` kawałkami.
+    Po scaleniu powinien być poprawnym JSONem; gdy model urwał generowanie w
+    połowie obiektu, zamykanie całego turnu błędem jest gorsze niż pusty zestaw
+    argumentów - tool z opcjonalnymi parametrami (inspect_image) dalej działa.
+    """
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not isinstance(raw, str):
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        Logger.printWarning(
+            f"Argumenty toola nie są poprawnym JSONem ({text[:40]!r}) - traktuję jako {{}}."
+        )
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _MergeToolCallFragment(slots: dict, order: list, fragment) -> None:
+    """Scal jeden fragment strumienia `tool_calls` w cały call (#51).
+
+    Kawałki tego samego wywołania przychodzą z tym samym `index`, a id/nazwa są
+    tylko w pierwszym z nich. Traktowanie każdego fragmentu jako osobnego toola
+    (stare `tool_calls.extend(tc)`) dawało ucięty JSON i `json.JSONDecodeError`
+    - cały turn ginął jako "Błąd modelu.".
+    """
+    function = getattr(fragment, "function", None)
+    name_piece = (getattr(function, "name", "") or "") if function is not None else ""
+    args_piece = (getattr(function, "arguments", "") or "") if function is not None else ""
+    if isinstance(args_piece, dict):  # server zwraca obiekt zamiast stringu
+        args_piece = json.dumps(args_piece)
+    call_id = getattr(fragment, "id", None) or ""
+
+    index = getattr(fragment, "index", None)
+    if isinstance(index, bool) or not isinstance(index, int):
+        # Server bez `index`: nowy call rozpoznajemy po id albo nazwie.
+        index = len(order) if (call_id or name_piece) else (order[-1] if order else 0)
+
+    slot = slots.get(index)
+    if slot is None:
+        slots[index] = {
+            "id": call_id or f"call_{index}",
+            "type": "function",
+            "function": {"name": name_piece, "arguments": args_piece},
+        }
+        order.append(index)
+        return
+
+    if call_id and not slot["id"]:
+        slot["id"] = call_id
+    if name_piece:
+        slot["function"]["name"] += name_piece  # nazwa też może być strugana
+    if args_piece:
+        slot["function"]["arguments"] += args_piece
 
 
 class AgentFlow:
@@ -27,6 +90,7 @@ class AgentFlow:
         *,
         tool_handle: ToolHandle | None = None,
         provider: ModelProvider | None = None,
+        message_resolver: Optional[Callable[[list], list]] = None,
     ):
         if provider is not None and tool_handle is None:
             tool_handle = provider.ToolsHandle
@@ -58,6 +122,15 @@ class AgentFlow:
         self._token_ratio = 1.0
         self._last_answer: Optional[str] = None
         self._total_tool_calls_count = 0
+
+        # #51 (obrazy/załączniki):
+        # - message_resolver: zamienia referencje {'type':'attachment','id':...} na parts
+        #   image_url z data URL. Wywoływany TYLKO przy budowaniu payloadu, więc w
+        #   self.context nigdy nie lądują base64 ani ścieżki z dysku.
+        # - session_scope: {'chat_id', 'attachment_store'} przekazywane narzędziom
+        #   (tools/ImageTools.py) przez handlers.ToolHandle.current_tool_session().
+        self.message_resolver = message_resolver
+        self.session_scope: Optional[dict] = None
 
         Logger.printInfo(
             f"AgentFlow init: num_ctx={self.num_ctx}, reserve={self.reserve_tokens}, "
@@ -133,6 +206,28 @@ class AgentFlow:
             f"(prompt_tokens={actual_prompt}{comp_info}, estymacja={est})"
         )
 
+    def _ApiMessages(self, messages: list) -> list:
+        """Kopia `messages` gotowa dla API (#51); oryginał NIE jest mutowany.
+
+        Zwraca oryginalną listę, gdy resolver nie jest ustawiony (message text-only).
+        Błąd resolvera (np. AttachmentError – załącznik z innego czatu) propaguje do
+        AgentAdapter, który zamienia go na czytelny event 'error'.
+        """
+        resolver = self.message_resolver
+        if resolver is None:
+            return messages
+        resolved = resolver(messages)
+        return resolved if isinstance(resolved, list) else messages
+
+    def _RunToolWithScope(self, name: str, args: dict) -> str:
+        """Woła tool z zakresem sesji ustawionym w tym samym wątku (#51).
+
+        Wątki ThreadPoolExecutor nie widzą ContextVarów ustawionych w wątku
+        requestowym, dlatego scope musi być ustawiony inside this callable.
+        """
+        with use_tool_session(self.session_scope):
+            return self.tools.execute_tool(name, args)
+
     def _ExecuteToolCalls(self, calls: list) -> bool:
         for call in calls:
             self._total_tool_calls_count += 1
@@ -147,8 +242,9 @@ class AgentFlow:
             )
 
             # ponytail: per-call thread pool for the timeout; fine for a handful of tool calls per run
+            # #51: _RunToolWithScope (nie execute_tool) - setuje session scope w wątku workera.
             with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(self.tools.execute_tool, call["name"], call["args"])
+                fut = ex.submit(self._RunToolWithScope, call["name"], call["args"])
                 try:
                     raw_result = fut.result(timeout=DEFAULT_TOOL_TIMEOUT)
                 except FutTimeout:
@@ -172,7 +268,8 @@ class AgentFlow:
             )
         return False
 
-    def Run(self, user_input: str) -> str:
+    def Run(self, user_input) -> str:
+        """Non-streaming run. `user_input` may be str or list multimodal parts (#51)."""
         self.RefreshModelContext()
         
         self._total_tool_calls_count = 0
@@ -191,13 +288,15 @@ class AgentFlow:
                 ratio=self._token_ratio,
                 reserve_tokens=self.reserve_tokens,
             )
-            messages_sent = self.context
+            # Budżet liczymy na referencjach (taniej), w payload trafia kopia z data URL.
+            api_messages = self._ApiMessages(self.context)
 
             response = self.ollama.Chat(
-                messages=messages_sent,
+                messages=api_messages,
                 max_tokens=self.reserve_tokens,
             )
-            self._CalibrateTokens(messages_sent, response)
+            # Kalibracja ratio po referencjach, nie po megabajtach base64 (#51).
+            self._CalibrateTokens(self.context, response)
 
             message = response.choices[0].message
 
@@ -222,7 +321,7 @@ class AgentFlow:
                     calls.append({
                         "id": tc.id,
                         "name": fn.name,
-                        "args": json.loads(fn.arguments or "{}"),
+                        "args": _ParseToolArguments(fn.arguments),
                     })
 
             Contx.ContextHandle.Append(
@@ -236,7 +335,8 @@ class AgentFlow:
 
         return self._last_answer or ""
 
-    def RunStream(self, user_input: str, as_events: bool = False):
+    def RunStream(self, user_input, as_events: bool = False):
+        """Streaming run. `user_input` may be str or list multimodal parts (#51)."""
         self.RefreshModelContext()
         self._total_tool_calls_count = 0
         Contx.ContextHandle.Add(self.context, user_input, role="user")
@@ -249,10 +349,14 @@ class AgentFlow:
                 reserve_tokens=self.reserve_tokens,
             )
             answer_parts = []
-            tool_calls = []
+            # #51: kawałki tool_calls scalane po `index` (slots/order), nie w płaską
+            # listę - inaczej arguments przychodzą ucięte i parse crashuje turn.
+            tool_slots: dict[int, dict] = {}
+            tool_order: list[int] = []
             last_chunk = None
+            # #51: payload = kopia z data URL; self.context zostaje referencjami (ID).
             for chunk in self.ollama.ChatStream(
-                messages=self.context,
+                messages=self._ApiMessages(self.context),
                 max_tokens=self.reserve_tokens,
                 auto_budget=False,
             ):
@@ -267,24 +371,14 @@ class AgentFlow:
                 if text:
                     yield {"type": "token", "text": text} if as_events else text
                     answer_parts.append(text)
-                tc = getattr(delta, "tool_calls", None)
-                if tc:
-                    tool_calls.extend(tc)
+                fragments = getattr(delta, "tool_calls", None)
+                if fragments:
+                    for fragment in fragments:
+                        _MergeToolCallFragment(tool_slots, tool_order, fragment)
             self._CalibrateTokens(self.context, last_chunk)
             answer = "".join(answer_parts)
-            if tool_calls:
-                tool_call_dicts = []
-                for tc in tool_calls:
-                    fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        tool_call_dicts.append({
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": fn.name or "",
-                                "arguments": fn.arguments or "{}",
-                            },
-                        })
+            tool_call_dicts = [tool_slots[key] for key in tool_order]
+            if tool_call_dicts:
                 Contx.ContextHandle.Append(
                     self.context,
                     {"role": "assistant", "content": answer, "tool_calls": tool_call_dicts},
@@ -293,7 +387,7 @@ class AgentFlow:
                     {
                         "id": tc["id"],
                         "name": tc["function"]["name"],
-                        "args": json.loads(tc["function"]["arguments"] or "{}"),
+                        "args": _ParseToolArguments(tc["function"]["arguments"]),
                     }
                     for tc in tool_call_dicts
                 ]

@@ -77,8 +77,9 @@ def test_web_tools():
 
 
 def test_builder_and_shared_registry():
-    assert build_tools(files=False, math=False, web=False, code=False).get_tools_list() == []
-    assert len(build_tools().get_tools_list()) == 18
+    assert (build_tools(files=False, math=False, web=False, code=False,
+                        images=False).get_tools_list() == [])
+    assert len(build_tools().get_tools_list()) == 20
     tools = build_tools(files=False, web=False)
     flow = AgentFlow(tool_handle=tools)
     assert flow.ollama.ToolsHandle is flow.tools is tools

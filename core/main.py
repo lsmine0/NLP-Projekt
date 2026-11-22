@@ -20,6 +20,7 @@ from core.AgentAdapter import (
     create_stt,
     create_tts,
 )
+from core.Attachments import AttachmentStore
 from core.ChatStore import ChatStore, SettingsStore
 from handlers.ToolHandle import ToolHandle
 from tools.ToolBuilder import build_tools
@@ -62,6 +63,8 @@ class AppRuntime:
     stt: STTBase
     tts: TTSBase
     agent_factory: Callable[[dict], AgentBase]
+    # #51: magazyn załączników (ID-based); WebGui binduje go z sesją agenta.
+    attachment_store: AttachmentStore | None = None
     audio_enabled: bool = True
     config: RuntimeConfig | None = None
     provider_factory: Callable[[dict], ModelProvider] | None = None
@@ -299,6 +302,7 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
 
     config = RuntimeConfig.from_env(settings, provider_name=args.provider)
     tool_handle = build_tools(workspace_dir=config.workspace)
+    attachment_store = AttachmentStore(config.data_dir / "attachments")  # #51
     providers = []
 
     def provider_factory(current_settings):
@@ -336,6 +340,7 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
         provider=provider, stt=stt, tts=tts, agent_factory=agent_factory,
         audio_enabled=not args.no_audio, config=config, provider_factory=provider_factory,
         providers=providers, mcp_clients=[mcp_handle] if mcp_handle is not None else [],
+        attachment_store=attachment_store,
     )
 
 
@@ -346,6 +351,7 @@ def build_api_runtime(config=None, *, provider_factory=None, tool_factory=None):
         config = RuntimeConfig.from_env(SettingsStore(initial.data_dir / "settings.json").get())
     settings_store = SettingsStore(config.data_dir / 'settings.json')
     chat_store = ChatStore(config.data_dir / 'chats')
+    attachment_store = AttachmentStore(config.data_dir / 'attachments')  # #51
     tools = tool_factory() if tool_factory else build_tools(workspace_dir=config.workspace)
     make_provider = provider_factory or create_provider
     providers = []
@@ -368,6 +374,7 @@ def build_api_runtime(config=None, *, provider_factory=None, tool_factory=None):
         return AppRuntime(settings_store=settings_store, chat_store=chat_store,
                           tool_handle=tools, provider=primary, stt=stt, tts=tts,
                           agent_factory=agent_factory, audio_enabled=False,
+                          attachment_store=attachment_store,
                           config=config, provider_factory=factory, providers=providers, config_locked=True)
     except Exception:
         primary.close()
