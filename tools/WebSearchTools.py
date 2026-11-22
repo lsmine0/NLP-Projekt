@@ -65,7 +65,12 @@ def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
     max_results = min(max_results, MAX_RESULTS_LIMIT)
 
     try:
-        results = DDGS().text(query, max_results=max_results)
+        try:
+            searcher = DDGS(timeout=REQUEST_TIMEOUT)
+        except TypeError:
+            # Starsze wersje ddgs nie przyjmują timeoutu w konstruktorze.
+            searcher = DDGS()
+        results = searcher.text(query, max_results=max_results)
     except RatelimitException:
         return ToolErrorText("Błąd: Przekroczono limit zapytań do wyszukiwarki DuckDuckGo (rate limit). Spróbuj ponownie za chwilę.")
     except TimeoutException:
@@ -222,11 +227,19 @@ def register_web_search_tools(tool_handle: ToolHandle, overwrite: bool = True) -
     """
     tool_handle.create_tool(
         name="search_web",
-        description="Wyszukuje aktualne informacje w internecie i zwraca listę wyników (tytuł, URL, krótki opis).",
+        description=(
+            "Wyszukuje aktualne informacje w internecie, w tym ceny, kursy walut, "
+            "pogodę i wiadomości, i zwraca listę wyników (tytuł, URL, krótki opis). "
+            "Używaj, gdy pytanie wymaga danych zmiennych w czasie; nie odpowiadaj "
+            "wtedy wyłącznie z pamięci."
+        ),
         properties={
             "query": {
                 "type": "string",
-                "description": "Zapytanie wyszukiwania do wpisania w wyszukiwarkę (słowa kluczowe).",
+                "description": (
+                    "Zapytanie wyszukiwania do wpisania w wyszukiwarkę (słowa kluczowe). "
+                    "Parametr musi nazywać się dokładnie 'query'."
+                ),
             },
             "max_results": {
                 "type": "integer",
@@ -235,11 +248,15 @@ def register_web_search_tools(tool_handle: ToolHandle, overwrite: bool = True) -
         },
         required=["query"],
         overwrite=overwrite,
+        risk=("read", "external"),
     )
 
     tool_handle.create_tool(
         name="fetch_webpage_content",
-        description="Pobiera i oczyszcza tekst ze wskazanej strony WWW z nadmiarowego kodu HTML/JS.",
+        description=(
+            "Pobiera i oczyszcza tekst ze wskazanej strony WWW z nadmiarowego kodu "
+            "HTML/JS. Użyj po search_web, gdy potrzebna jest treść konkretnej strony."
+        ),
         properties={
             "url": {
                 "type": "string",
@@ -252,6 +269,7 @@ def register_web_search_tools(tool_handle: ToolHandle, overwrite: bool = True) -
         },
         required=["url"],
         overwrite=overwrite,
+        risk=("read", "external"),
     )
 
     for name, function in AVAILABLE_WEB_TOOLS.items():

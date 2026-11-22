@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ from handlers.ToolHandle import ToolHandle
 from tools.ToolBuilder import build_tools
 from core.RuntimeConfig import RuntimeConfig
 from core.ModelProvider import ModelProvider, create_provider
+from core.AuditLog import AuditLog
+from core.Interactions import InteractionBroker
 
 
 class StartupError(RuntimeError):
@@ -72,6 +75,8 @@ class AppRuntime:
     config_locked: bool = False
     _closed: bool = False
     mcp_clients: list[Any] = field(default_factory=list)
+    interaction_broker: InteractionBroker | None = None
+    audit_log: AuditLog | None = None
 
     @property
     def settings(self) -> dict:
@@ -109,6 +114,17 @@ class AppRuntime:
                     pass
         self.mcp_clients.clear()
 
+        if self.interaction_broker is not None:
+            try:
+                self.interaction_broker.close()
+            except Exception:
+                pass
+        if self.audit_log is not None:
+            try:
+                self.audit_log.close()
+            except Exception:
+                pass
+
         if "core.WebGui" in sys.modules:
             try:
                 sys.modules["core.WebGui"].sessions.clear()
@@ -126,9 +142,30 @@ CONFIG_DESCRIPTIONS: dict[str, str] = {
     "stt_auto_send": "Automatyczne wysyłanie tekstu po nagraniu głosu (true / false)",
     "theme": "Motyw kolorystyczny GUI (dark / light)",
     "show_history": "Pokazywanie paska historii rozmów w GUI (true / false)",
+    "tool_policies": "Nadpisania polityk narzędzi {nazwa: allow|ask|deny}",
+    "tool_risk_policies": "Domyślne polityki per ryzyko {read|write|destructive|external: allow|ask|deny}",
 }
 
 DEFAULT_MCP_CONFIG_NAME = "mcp_servers.json"
+
+
+def _protected_tool_paths(
+    settings_store: SettingsStore,
+    config: RuntimeConfig,
+    mcp_config: str | None = None,
+) -> list[Path]:
+    """Files the agent must not modify even after an explicit approval."""
+    mcp_path = Path(mcp_config).expanduser() if mcp_config else (
+        settings_store.path.parent / DEFAULT_MCP_CONFIG_NAME
+    )
+    return [
+        settings_store.path,
+        mcp_path,
+        config.data_dir / "audit",
+        config.data_dir / "logs",
+        config.data_dir / "chats",
+        config.data_dir / "attachments",
+    ]
 
 
 def _parse_config_value(key: str, raw_val: str) -> Any:
@@ -145,6 +182,14 @@ def _parse_config_value(key: str, raw_val: str) -> Any:
             return int(raw_val.strip())
         except ValueError as exc:
             raise StartupError(f"Wartość dla '{key}' musi być liczbą całkowitą, otrzymano: '{raw_val}'.") from exc
+    if isinstance(default_val, dict):
+        try:
+            parsed = json.loads(raw_val)
+        except ValueError as exc:
+            raise StartupError(f"Wartość dla '{key}' musi być obiektem JSON.") from exc
+        if not isinstance(parsed, dict):
+            raise StartupError(f"Wartość dla '{key}' musi być obiektem JSON.")
+        return parsed
     return raw_val.strip()
 
 
@@ -301,8 +346,26 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
     settings = settings_store.get()
 
     config = RuntimeConfig.from_env(settings, provider_name=args.provider)
-    tool_handle = build_tools(workspace_dir=config.workspace)
+    Logger.configure_file_logging(config.data_dir / "logs" / "app.log")
+    Logger.printInfo(
+        f"Start runtime: data_dir={config.data_dir} workspace={config.workspace} "
+        f"allowed_dirs={list(config.allowed_directories)}"
+    )
+    tool_handle = build_tools(
+        workspace_dir=config.workspace,
+        allowed_dirs=config.allowed_directories,
+        policy_overrides=settings.get("tool_policies", {}),
+        risk_policies=settings.get("tool_risk_policies", {}),
+        protected_paths=_protected_tool_paths(
+            settings_store, config, getattr(args, "mcp_config", None)
+        ),
+    )
     attachment_store = AttachmentStore(config.data_dir / "attachments")  # #51
+    interaction_broker = InteractionBroker(timeout=config.approval_timeout)
+    audit_log = AuditLog(config.data_dir / "audit" / "tool_audit.jsonl")
+    Logger.printInfo(
+        f"Logi: {Logger.log_file_path()} | audit: {audit_log.path}"
+    )
     providers = []
 
     def provider_factory(current_settings):
@@ -327,13 +390,21 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
             close = getattr(component, 'close', None)
             if callable(close):
                 close()
+        interaction_broker.close()
+        audit_log.close()
         raise
 
     def agent_factory(current_settings=None):
         cfg = dict(current_settings or settings_store.get())
         resolved = RuntimeConfig.from_env(cfg, provider_name=args.provider)
         cfg.update(ollama_endpoint=resolved.endpoint, ollama_model=resolved.model)
-        return create_agent(cfg, tool_handle=tool_handle, provider=provider_factory(cfg))
+        return create_agent(
+            cfg,
+            tool_handle=tool_handle,
+            provider=provider_factory(cfg),
+            interaction_broker=interaction_broker,
+            audit_log=audit_log,
+        )
 
     return AppRuntime(
         settings_store=settings_store, chat_store=chat_store, tool_handle=tool_handle,
@@ -341,6 +412,7 @@ def build_runtime(args: argparse.Namespace) -> AppRuntime:
         audio_enabled=not args.no_audio, config=config, provider_factory=provider_factory,
         providers=providers, mcp_clients=[mcp_handle] if mcp_handle is not None else [],
         attachment_store=attachment_store,
+        interaction_broker=interaction_broker, audit_log=audit_log,
     )
 
 
@@ -349,10 +421,25 @@ def build_api_runtime(config=None, *, provider_factory=None, tool_factory=None):
     if config is None:
         initial = RuntimeConfig.from_env()
         config = RuntimeConfig.from_env(SettingsStore(initial.data_dir / "settings.json").get())
+    Logger.configure_file_logging(config.data_dir / "logs" / "app.log")
+    Logger.printInfo(
+        f"Start API runtime: data_dir={config.data_dir} workspace={config.workspace} "
+        f"allowed_dirs={list(config.allowed_directories)}"
+    )
     settings_store = SettingsStore(config.data_dir / 'settings.json')
     chat_store = ChatStore(config.data_dir / 'chats')
     attachment_store = AttachmentStore(config.data_dir / 'attachments')  # #51
-    tools = tool_factory() if tool_factory else build_tools(workspace_dir=config.workspace)
+    settings = settings_store.get()
+    tools = tool_factory() if tool_factory else build_tools(
+        workspace_dir=config.workspace,
+        allowed_dirs=config.allowed_directories,
+        policy_overrides=settings.get("tool_policies", {}),
+        risk_policies=settings.get("tool_risk_policies", {}),
+        protected_paths=_protected_tool_paths(settings_store, config),
+    )
+    interaction_broker = InteractionBroker(timeout=config.approval_timeout)
+    audit_log = AuditLog(config.data_dir / "audit" / "tool_audit.jsonl")
+    Logger.printInfo(f"Logi: {Logger.log_file_path()} | audit: {audit_log.path}")
     make_provider = provider_factory or create_provider
     providers = []
 
@@ -370,14 +457,23 @@ def build_api_runtime(config=None, *, provider_factory=None, tool_factory=None):
         def agent_factory(settings):
             settings = dict(settings, ollama_endpoint=config.endpoint,
                             ollama_model=config.model or settings.get('ollama_model', ''))
-            return create_agent(settings, tool_handle=tools, provider=factory(settings))
+            return create_agent(
+                settings,
+                tool_handle=tools,
+                provider=factory(settings),
+                interaction_broker=interaction_broker,
+                audit_log=audit_log,
+            )
         return AppRuntime(settings_store=settings_store, chat_store=chat_store,
                           tool_handle=tools, provider=primary, stt=stt, tts=tts,
                           agent_factory=agent_factory, audio_enabled=False,
                           attachment_store=attachment_store,
-                          config=config, provider_factory=factory, providers=providers, config_locked=True)
+                          config=config, provider_factory=factory, providers=providers, config_locked=True,
+                          interaction_broker=interaction_broker, audit_log=audit_log)
     except Exception:
         primary.close()
+        interaction_broker.close()
+        audit_log.close()
         raise
 
 
@@ -457,6 +553,79 @@ def _render_cli_banner(
     print(f"\033[38;5;208m╰{bottom_bar}╯\033[0m\n")
 
 
+def _cli_tool_summary(event: dict) -> str:
+    risk = ", ".join(event.get("risk") or []) or "brak ryzyka"
+    source = event.get("source") or "builtin"
+    server = event.get("server")
+    source_label = f"MCP/{server}" if source == "mcp" and server else source
+    return f"{event.get('tool')} [{source_label}] ryzyko: {risk}"
+
+
+def _cli_approval(runtime: AppRuntime, event: dict) -> str:
+    print("\n\033[33m╭─ Zgoda na narzędzie ─────────────────────────╮\033[0m")
+    print(f"\033[33m│\033[0m {_cli_tool_summary(event)}")
+    args = event.get("arguments") or {}
+    if args:
+        import json
+
+        for line in json.dumps(args, ensure_ascii=False, indent=2).splitlines():
+            print(f"\033[2m│ {line}\033[0m")
+    print("\033[33m╰──────────────────────────────────────────────╯\033[0m")
+    while True:
+        try:
+            choice = input("Zgoda: [1/a] raz  [2/s] w sesji  [3/d] odmów (domyślnie 3): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "3"
+        decision = {
+            "1": "allow_once", "a": "allow_once",
+            "2": "allow_session", "s": "allow_session",
+            "3": "deny", "d": "deny",
+        }.get(choice, "deny")
+        broker = runtime.interaction_broker
+        if broker is None:
+            return decision
+        result = broker.resolve_approval(event["id"], decision)
+        if result.ok:
+            state = {"allow_once": "zezwolono raz", "allow_session": "zezwolono w sesji", "deny": "odmówiono"}[decision]
+            print(f"\033[2m[{state}]\033[0m")
+            return decision
+        print(f"\033[31mNie można rozstrzygnąć zgody: {result.code}\033[0m")
+        if result.code in ("expired", "cancelled", "not_found", "already_resolved"):
+            return decision
+
+
+def _cli_question(runtime: AppRuntime, event: dict) -> None:
+    print("\n\033[36m╭─ Pytanie od agenta ──────────────────────────╮\033[0m")
+    header = (event.get("header") or "").strip()
+    if header:
+        print(f"\033[36m│\033[0m \033[1m{header}\033[0m")
+    print(f"\033[36m│\033[0m {event.get('question')}")
+    options = list(event.get("options") or [])
+    for index, option in enumerate(options, start=1):
+        print(f"\033[36m│\033[0m   [{index}] {option}")
+    print("\033[36m╰──────────────────────────────────────────────╯\033[0m")
+    try:
+        answer = input("Odpowiedź (numer opcji, własny tekst lub Enter = anuluj): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    broker = runtime.interaction_broker
+    if broker is None:
+        return
+    if not answer:
+        payload = {"cancelled": True}
+    elif answer.isdigit() and 1 <= int(answer) <= len(options):
+        selected = options[int(answer) - 1]
+        payload = {"answer": selected, "option": selected}
+    elif event.get("allow_custom", True) is False:
+        print("\033[31mTo pytanie pozwala tylko na wybór jednej z opcji.\033[0m")
+        payload = {"cancelled": True}
+    else:
+        payload = {"answer": answer}
+    result = broker.resolve_question(event["id"], payload)
+    if not result.ok:
+        print(f"\033[31mNie można przekazać odpowiedzi: {result.code}\033[0m")
+
+
 def run_cli(runtime: AppRuntime) -> int:
     """Tryb CLI korzystający z tej samej pętli agenta co GUI."""
     Logger.VERBOSE = 1
@@ -490,6 +659,8 @@ def run_cli(runtime: AppRuntime) -> int:
             break
         if cmd == "/reset":
             agent.reset()
+            if runtime.interaction_broker is not None:
+                runtime.interaction_broker.clear_session_allows()
             last_thinking = ""
             print("\033[2m[Jarvis] Historia rozmowy wyczyszczona.\033[0m\n")
             continue
@@ -628,6 +799,22 @@ def run_cli(runtime: AppRuntime) -> int:
                 reply_parts.append(token_text)
                 print(token_text, end="", flush=True)
 
+            elif event["type"] == "approval_required":
+                _cli_approval(runtime, event)
+            elif event["type"] == "user_input_required":
+                _cli_question(runtime, event)
+            elif event["type"] in ("approval_pending", "question_pending"):
+                continue
+            elif event["type"] == "warning":
+                Logger.printWarning(event["message"])
+            elif event["type"] == "answer_reset":
+                print("\n\033[33m[Retry]\033[0m Model opisał wywołanie narzędzia w treści — ponawiam z tool_calls.")
+            elif event["type"] == "tool_start":
+                print(f"\n\033[2m[tool] {_cli_tool_summary(event)}\033[0m")
+            elif event["type"] == "tool_result":
+                status = event.get("status", "ok")
+                color = "\033[32m" if status == "ok" else "\033[31m"
+                print(f"\033[2m[tool] {event.get('tool')}: {color}{status}\033[0m")
             elif event["type"] == "error":
                 if in_thinking:
                     print("\r" + " " * 30 + "\r", end="", flush=True)

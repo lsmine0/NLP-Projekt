@@ -159,7 +159,8 @@ class MCPConfigTests(unittest.TestCase):
 
         self.assertFalse(config.allow_all_tools)
         self.assertEqual(config.allow_tools, frozenset({"echo", "add"}))
-        self.assertEqual(config.deny_tools, frozenset({"add", "slow"}))
+        self.assertEqual(config.deny_tools, frozenset({"add"}))
+        self.assertEqual(config.ask_tools, frozenset({"slow"}))
 
     def test_allow_star_means_all(self):
         path = self._write(
@@ -195,6 +196,8 @@ class MCPHandleIntegrationTests(unittest.TestCase):
         tool_handle = ToolHandle()
         handle = MCPHandle(config_path, tool_handle)
         handle.start()
+        # MCP tools are external by default (ask); tests exercise transport, not UI.
+        tool_handle.configure_security(risk_policies={"external": "allow"})
         self.addCleanup(handle.close)
         return handle, tool_handle
 
@@ -275,6 +278,28 @@ class MCPHandleIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(echo_result["success"])
         self.assertEqual(echo_result["result"]["text"], "reconnected")
+
+
+    def test_ask_policy_registers_and_requires_approval(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(directory, ignore_errors=True))
+        payload = _config(["echo"])
+        payload["servers"]["echo"]["tools"]["ask"] = ["slow"]
+        payload["servers"]["echo"]["risk"] = ["external", "destructive"]
+        config_path = directory / "mcp_servers.json"
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        tool_handle = ToolHandle()
+        handle = MCPHandle(config_path, tool_handle)
+        handle.start()
+        self.addCleanup(handle.close)
+
+        names = {item["function"]["name"] for item in tool_handle.get_tools_list()}
+        self.assertIn("mcp_echo_slow", names)
+        self.assertEqual(tool_handle.get_policy("mcp_echo_slow"), "ask")
+        result = json.loads(tool_handle.execute_tool("mcp_echo_slow", {"seconds": 0.1}))
+        self.assertFalse(result["success"])
+        self.assertEqual(result["result"]["code"], "approval_required")
 
     def test_close_removes_tools_and_stops_runtime(self):
         handle, tool_handle = self._make_handle(["echo"])

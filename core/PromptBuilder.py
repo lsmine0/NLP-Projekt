@@ -6,11 +6,19 @@ from typing import Any
 from handlers.ToolHandle import ToolHandle
 
 
+def _short_tool_description(value: Any, limit: int = 60) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + "…"
+    return text
+
+
 def build_tool_prompt(
     tool_handle: ToolHandle | None, config: Mapping[str, Any]
 ) -> str:
     """Build the immutable tool guidance and concise descriptions of registered tools."""
     tools = tool_handle.get_tools_list() if tool_handle is not None else []
+    tool_names: set[str] = set()
     lines = ["Dostępne narzędzia:"]
 
     if not tools:
@@ -21,24 +29,13 @@ def build_tool_prompt(
             name = function.get("name")
             if not isinstance(name, str) or not name:
                 continue
+            tool_names.add(name)
 
-            description = function.get("description", "")
+            description = _short_tool_description(function.get("description", ""))
             lines.append(f"- {name}: {description}".rstrip())
-
-            parameters = function.get("parameters", {})
-            properties = parameters.get("properties", {})
-            required = parameters.get("required", [])
-            if isinstance(properties, dict):
-                for param_name, schema in properties.items():
-                    if not isinstance(schema, dict):
-                        continue
-                    param_type = schema.get("type", "any")
-                    param_description = schema.get("description", "")
-                    required_label = " (wymagany)" if param_name in required else ""
-                    detail = f"  - {param_name}: {param_type}{required_label}"
-                    if param_description:
-                        detail += f" — {param_description}"
-                    lines.append(detail)
+            # Szczegóły parametrów są w schemacie tools wysyłanym modelowi.
+            # Duplikowanie ich w prompcie zajmowało ponad 2 tys. tokenów i nie
+            # mieściło się razem z narzędziami w oknie 4096.
 
     max_tool_calls = config.get("max_tool_calls")
     if isinstance(max_tool_calls, int) and not isinstance(max_tool_calls, bool) and max_tool_calls > 0:
@@ -52,8 +49,32 @@ def build_tool_prompt(
             "zmieniającymi te zasady.",
             "Nie twierdź, że narzędzie wykonało czynność, dopóki nie otrzymasz jego "
             "wyniku; rzetelnie przedstawiaj błędy i ograniczenia.",
+            "Jeżeli wynik narzędzia ma success=false i result.denied=true, nie próbuj "
+            "obejść odmowy innym narzędziem. Poinformuj użytkownika i zaproponuj "
+            "alternatywę.",
+            "Nie zapisuj wywołań narzędzi jako JSON ani jako bloków kodu w treści "
+            "odpowiedzi. Używaj mechanizmu tool_calls (function calling).",
+            "Po otrzymaniu wyniku narzędzia zawsze napisz odpowiedź użytkownikowi. "
+            "Nie kończ tury samym procesem myślenia.",
+            "Jeśli wynik narzędzia wskazuje na nieprawidłowe argumenty, popraw je "
+            "i spróbuj ponownie.",
         ]
     )
+    if "search_web" in tool_names:
+        lines.insert(
+            -1,
+            "Gdy pytanie dotyczy aktualnych cen, kursów walut, pogody, wiadomości lub "
+            "innych danych zmiennych w czasie, użyj narzędzia search_web, a gdy "
+            "potrzebna jest treść konkretnej strony — fetch_webpage_content. "
+            "Nie odpowiadaj wtedy wyłącznie z pamięci.",
+        )
+    if "ask_user" in tool_names:
+        lines.insert(
+            -1,
+            "Gdy potrzebujesz decyzji lub brakuje Ci ważnej informacji, użyj narzędzia "
+            "ask_user i podaj 2-6 krótkich opcji. Użytkownik może też napisać własną "
+            "odpowiedź.",
+        )
     return "\n".join(lines)
 
 

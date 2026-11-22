@@ -116,6 +116,12 @@
         html.icons-offline .ph-floppy-disk::before { content: "💾"; }
         html.icons-offline .ph-brain::before { content: "💭"; }
         html.icons-offline .ph-caret-down::before { content: "▾"; }
+        html.icons-offline .ph-wrench::before { content: "🔧"; }
+        html.icons-offline .ph-plugs::before { content: "🔌"; }
+        html.icons-offline .ph-globe::before { content: "🌐"; }
+        html.icons-offline .ph-check::before { content: "✓"; }
+        html.icons-offline .ph-x::before { content: "✕"; }
+        html.icons-offline .ph-circle-notch::before { content: "◌"; }
 
         aside {
             display: flex;
@@ -297,6 +303,7 @@
             white-space: normal;
         }
         .bubble .error { color: var(--danger); }
+        .bubble .warning { color: #b7791f; }
         .user .bubble {
             color: var(--text-user-bubble);
             background: var(--bg-user-bubble);
@@ -829,6 +836,193 @@
         .btn-danger { background: var(--danger); color: #fff; border-color: transparent; }
         .btn-danger:hover { opacity: 0.9; }
 
+        .tool-activity {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 1px 0 3px;
+        }
+        .tool-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            max-width: 100%;
+            padding: 3px 8px;
+            color: var(--text-secondary);
+            background: var(--bg-subtle);
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+            font-size: 11.5px;
+            line-height: 1.35;
+        }
+        .tool-badge .tool-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 600;
+        }
+        .tool-badge .tool-source {
+            color: var(--text-muted);
+            font-size: 10px;
+            letter-spacing: .03em;
+            text-transform: uppercase;
+        }
+        .tool-badge .tool-status { color: var(--text-muted); display: inline-flex; }
+        .tool-badge.running .tool-status { color: var(--accent); animation: pulse-opacity 1.2s infinite ease-in-out; }
+        .tool-badge.ok .tool-status { color: var(--success); }
+        .tool-badge.error,
+        .tool-badge.denied { border-color: var(--danger); }
+        .tool-badge.error .tool-status,
+        .tool-badge.denied .tool-status { color: var(--danger); }
+        .tool-code {
+            padding: 1px 4px;
+            color: var(--danger);
+            background: var(--danger-soft);
+            border-radius: 4px;
+            font-size: 10px;
+        }
+        .tool-risk {
+            padding: 1px 5px;
+            color: var(--text-muted);
+            background: var(--bg-main);
+            border-radius: 5px;
+            font-size: 10px;
+            text-transform: lowercase;
+        }
+        .tool-risk.read { color: var(--accent-text); }
+        .tool-risk.write { color: #b7791f; }
+        .tool-risk.destructive { color: var(--danger); }
+        .tool-risk.external { color: #8b5cf6; }
+        .risk-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 10px; }
+        .approval-args {
+            margin: 0 0 14px;
+            padding: 9px 11px;
+            max-height: 220px;
+            overflow: auto;
+            color: var(--text-secondary);
+            background: var(--bg-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+            font-size: 11.5px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .approval-tool {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0 0 10px;
+            font-weight: 600;
+        }
+        .approval-inline {
+            padding: 10px 12px;
+            background: var(--bg-subtle);
+            border: 1px solid var(--accent);
+            border-radius: 9px;
+        }
+        .approval-inline-head {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin-bottom: 6px;
+            color: var(--accent-text);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: .03em;
+        }
+        .approval-inline-tool {
+            margin-bottom: 6px;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+        .approval-inline .risk-chips { margin-bottom: 7px; }
+        .approval-args-inline {
+            max-height: 150px;
+            margin-bottom: 8px;
+            font-size: 11px;
+        }
+        .approval-inline-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .approval-inline-actions button {
+            padding: 6px 10px;
+            border-radius: 7px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .no-answer {
+            color: var(--text-muted);
+            font-style: italic;
+        }
+        .question-options {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            margin: 0 0 12px;
+        }
+        .question-options button {
+            width: 100%;
+            padding: 9px 11px;
+            color: var(--text-primary);
+            text-align: left;
+            background: var(--bg-subtle);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+        .question-options button:hover { background: var(--bg-hover); }
+        .question-custom {
+            display: flex;
+            gap: 8px;
+            margin: 0 0 12px;
+        }
+        .question-custom input {
+            flex: 1;
+            min-width: 0;
+            padding: 8px 10px;
+            color: var(--text-primary);
+            background: var(--bg-main);
+            border: 1px solid var(--border-color);
+            border-radius: 7px;
+        }
+        .tool-policy-list { display: flex; flex-direction: column; gap: 6px; }
+        .tool-policy-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 9px;
+            background: var(--bg-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+        .tool-policy-row .meta { min-width: 0; flex: 1; }
+        .tool-policy-row .name {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 600;
+            font-size: 12.5px;
+        }
+        .tool-policy-row .source {
+            color: var(--text-muted);
+            font-size: 10.5px;
+            text-transform: uppercase;
+            letter-spacing: .03em;
+        }
+        .tool-policy-row select { width: 92px; flex: 0 0 92px; padding: 5px 7px; }
+        .risk-policy-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 6px 0;
+        }
+        .risk-policy-row label { flex: 1; color: var(--text-secondary); font-size: 12.5px; }
+        .risk-policy-row select { width: 100px; padding: 5px 7px; }
+        .settings-hint { color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
+
         @media (max-width: 650px) {
             aside { width: 190px; flex-basis: 190px; padding: 18px 9px; }
             header { padding: 0 16px; }
@@ -921,6 +1115,17 @@
                 <input id="max-age-days" type="number" min="0">
             </label>
 
+            <h3>Narzędzia</h3>
+            <p class="settings-hint">Ryzyko narzędzia może mieć kilka etykiet jednocześnie.
+                Domyślne polityki działają dla etykiet; wpis per narzędzie ma pierwszeństwo.</p>
+            <div id="risk-policy-list"></div>
+            <div class="tool-policy-list" id="tool-policy-list"></div>
+            <p class="settings-hint" id="allowed-dirs"></p>
+            <button class="secondary" id="save-tool-policies" type="button">
+                <i class="ph ph-floppy-disk"></i> Zapisz polityki narzędzi
+            </button>
+            <p id="tool-policy-status" role="status"></p>
+
             <h3>Głos</h3>
             <label class="check"><input id="tts-enabled" type="checkbox"> Czytaj odpowiedzi na głos</label>
             <label class="check"><input id="stt-auto-send" type="checkbox"> Wysyłaj automatycznie po rozpoznaniu mowy</label>
@@ -980,6 +1185,42 @@
         </div>
     </div>
 
+
+    <div class="modal-backdrop" id="approval-modal" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+        <div class="modal-box">
+            <h3 id="approval-title">Zgoda na narzędzie</h3>
+            <p>Agent chce użyć narzędzia, które może zmienić dane lub wykonać operację poza czatem.</p>
+            <div class="approval-tool">
+                <i class="ph ph-wrench"></i>
+                <span id="approval-tool"></span>
+            </div>
+            <div class="risk-chips" id="approval-risk"></div>
+            <div class="approval-args" id="approval-args"></div>
+            <p class="modal-warning" id="approval-status"></p>
+            <div class="modal-actions">
+                <button class="btn-cancel" id="approval-deny" type="button">Odmów</button>
+                <button class="btn-cancel" id="approval-once" type="button">Zezwól raz</button>
+                <button class="btn-danger" id="approval-session" type="button">Zezwól w sesji</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="question-modal" role="dialog" aria-modal="true" aria-labelledby="question-header">
+        <div class="modal-box">
+            <h3 id="question-header">Pytanie od agenta</h3>
+            <p id="question-text"></p>
+            <div class="question-options" id="question-options"></div>
+            <div class="question-custom">
+                <input id="question-custom" type="text" placeholder="Napisz własną odpowiedź…"
+                    aria-label="Własna odpowiedź">
+                <button class="secondary" id="question-submit" type="button">Wyślij</button>
+            </div>
+            <p class="modal-warning" id="question-status"></p>
+            <div class="modal-actions">
+                <button class="btn-cancel" id="question-cancel" type="button">Anuluj</button>
+            </div>
+        </div>
+    </div>
     <script>
         const $ = (id) => document.getElementById(id);
         const messages = $("messages");
@@ -1224,6 +1465,295 @@
             if (!response.ok) throw new Error(data.error || `Błąd serwera (${response.status})`);
             return data;
         }
+
+        let currentApprovalId = null;
+        let approvalInline = null;
+        let currentQuestionId = null;
+        let currentQuestionOptions = [];
+        let approvalBusy = false;
+        let questionBusy = false;
+
+        const RISK_POLICY_DEFAULTS = {
+            read: "allow",
+            write: "ask",
+            destructive: "ask",
+            external: "ask",
+        };
+
+        function riskChip(label) {
+            const chip = document.createElement("span");
+            chip.className = `tool-risk ${label}`;
+            chip.textContent = label;
+            return chip;
+        }
+
+        function fillRiskChips(container, risk) {
+            container.replaceChildren(...(Array.isArray(risk) ? risk : []).map(riskChip));
+        }
+
+        function toolStatusIcon(status) {
+            if (status === "running") return "ph ph-circle-notch";
+            if (status === "denied" || status === "error") return "ph ph-x";
+            return "ph ph-check";
+        }
+
+        function createToolBadge(item) {
+            const badge = document.createElement("span");
+            const status = item.status || "ok";
+            badge.className = `tool-badge ${status}`;
+            const codeLabel = item.code ? ` · ${item.code}` : "";
+            badge.title = `Narzędzie: ${item.name || "?"} · status: ${status}${codeLabel}`;
+
+            const icon = document.createElement("i");
+            icon.className = item.source === "mcp" ? "ph ph-plugs" : "ph ph-wrench";
+            badge.append(icon);
+
+            const name = document.createElement("span");
+            name.className = "tool-name";
+            name.textContent = item.name || "?";
+            badge.append(name);
+
+            const source = document.createElement("span");
+            source.className = "tool-source";
+            source.textContent = item.source === "mcp"
+                ? `MCP · ${item.server || "serwer"}`
+                : "narzędzie";
+            badge.append(source);
+
+            (Array.isArray(item.risk) ? item.risk : []).forEach((label) => badge.append(riskChip(label)));
+
+            if (item.code && (status === "denied" || status === "error")) {
+                const code = document.createElement("span");
+                code.className = "tool-code";
+                code.textContent = item.code;
+                badge.append(code);
+            }
+
+            const state = document.createElement("span");
+            state.className = "tool-status";
+            const stateIcon = document.createElement("i");
+            stateIcon.className = toolStatusIcon(status);
+            state.append(stateIcon);
+            badge.append(state);
+            return badge;
+        }
+
+        function createToolActivity(tools) {
+            if (!Array.isArray(tools) || !tools.length) return null;
+            const wrap = document.createElement("div");
+            wrap.className = "tool-activity";
+            tools.forEach((item) => wrap.append(createToolBadge(item)));
+            return wrap;
+        }
+
+        function setModalWarning(element, message) {
+            if (!element) return;
+            element.textContent = message || "";
+            element.style.display = message ? "block" : "none";
+        }
+
+        function approvalButtons() {
+            return [
+                ...document.querySelectorAll("#approval-modal .modal-actions button"),
+                ...document.querySelectorAll(".approval-inline-actions button"),
+            ];
+        }
+
+        function setApprovalButtonsDisabled(disabled) {
+            approvalButtons().forEach((button) => {
+                button.disabled = disabled;
+            });
+        }
+
+        function hideApproval() {
+            currentApprovalId = null;
+            approvalBusy = false;
+            $("approval-modal")?.classList.remove("open");
+            setModalWarning($("approval-status"), "");
+            if (approvalInline) {
+                approvalInline.remove();
+                approvalInline = null;
+            }
+        }
+
+        function createApprovalInline(event, bubble) {
+            if (!bubble) return null;
+            const card = document.createElement("div");
+            card.className = "approval-inline";
+
+            const head = document.createElement("div");
+            head.className = "approval-inline-head";
+            const icon = document.createElement("i");
+            icon.className = "ph ph-wrench";
+            const title = document.createElement("strong");
+            title.textContent = "Oczekuje na zgodę";
+            head.append(icon, title);
+            card.append(head);
+
+            const tool = document.createElement("div");
+            tool.className = "approval-inline-tool";
+            tool.textContent = event.source === "mcp"
+                ? `${event.tool} (MCP · ${event.server || "serwer"})`
+                : event.tool;
+            card.append(tool);
+
+            const risk = document.createElement("div");
+            risk.className = "risk-chips";
+            fillRiskChips(risk, Array.isArray(event.risk) ? event.risk : []);
+            card.append(risk);
+
+            const args = document.createElement("pre");
+            args.className = "approval-args approval-args-inline";
+            args.textContent = event.arguments && Object.keys(event.arguments).length
+                ? JSON.stringify(event.arguments, null, 2)
+                : "Brak argumentów.";
+            card.append(args);
+
+            const actions = document.createElement("div");
+            actions.className = "approval-inline-actions";
+            const deny = document.createElement("button");
+            deny.type = "button";
+            deny.className = "btn-cancel";
+            deny.textContent = "Odmów";
+            deny.addEventListener("click", () => resolveApproval("deny"));
+            const once = document.createElement("button");
+            once.type = "button";
+            once.className = "btn-cancel";
+            once.textContent = "Zezwól raz";
+            once.addEventListener("click", () => resolveApproval("allow_once"));
+            const session = document.createElement("button");
+            session.type = "button";
+            session.className = "btn-danger";
+            session.textContent = "Zezwól w sesji";
+            session.addEventListener("click", () => resolveApproval("allow_session"));
+            actions.append(deny, once, session);
+            card.append(actions);
+
+            bubble.append(card);
+            return card;
+        }
+
+        function showApproval(event, bubble = null) {
+            currentApprovalId = event.id;
+            approvalBusy = false;
+            const risk = Array.isArray(event.risk) ? event.risk : [];
+            if (approvalInline) {
+                approvalInline.remove();
+                approvalInline = null;
+            }
+            // Inline card is the fallback when a stale WebView lacks the modal.
+            approvalInline = createApprovalInline(event, bubble);
+            setApprovalButtonsDisabled(false);
+
+            const modal = $("approval-modal");
+            if (!modal) {
+                console.error("Brak elementu modalnego zgody; pozostaje karta inline.");
+                return;
+            }
+            $("approval-title").textContent = "Zgoda na narzędzie";
+            $("approval-tool").textContent = event.source === "mcp"
+                ? `${event.tool} (MCP · ${event.server || "serwer"})`
+                : event.tool;
+            fillRiskChips($("approval-risk"), risk);
+            const args = event.arguments && Object.keys(event.arguments).length
+                ? JSON.stringify(event.arguments, null, 2)
+                : "Brak argumentów.";
+            $("approval-args").textContent = args;
+            setModalWarning($("approval-status"), "");
+            modal.classList.add("open");
+        }
+
+        async function resolveApproval(decision) {
+            if (!currentApprovalId || approvalBusy) return;
+            approvalBusy = true;
+            setApprovalButtonsDisabled(true);
+            try {
+                await api(`/api/approvals/${currentApprovalId}`, {
+                    method: "POST",
+                    body: JSON.stringify({ decision }),
+                });
+                hideApproval();
+            } catch (error) {
+                setModalWarning($("approval-status"), error.message);
+                approvalBusy = false;
+                setApprovalButtonsDisabled(false);
+            }
+        }
+
+        function hideQuestion() {
+            currentQuestionId = null;
+            currentQuestionOptions = [];
+            questionBusy = false;
+            $("question-modal").classList.remove("open");
+            setModalWarning($("question-status"), "");
+            $("question-custom").value = "";
+        }
+
+        function showQuestion(event) {
+            currentQuestionId = event.id;
+            currentQuestionOptions = Array.isArray(event.options) ? event.options : [];
+            questionBusy = false;
+            $("question-header").textContent = event.header || "Pytanie od agenta";
+            $("question-text").textContent = event.question || "";
+            const options = $("question-options");
+            options.replaceChildren();
+            currentQuestionOptions.forEach((option, index) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = `${index + 1}. ${option}`;
+                button.addEventListener("click", () => resolveQuestion(index, option));
+                options.append(button);
+            });
+            $("question-custom").value = "";
+            $("question-custom").disabled = event.allow_custom === false;
+            $("question-submit").disabled = event.allow_custom === false;
+            $("question-cancel").disabled = false;
+            setModalWarning($("question-status"), "");
+            $("question-modal").classList.add("open");
+            if (event.allow_custom !== false) $("question-custom").focus();
+        }
+
+        async function resolveQuestion(optionIndex, answer, cancelled = false) {
+            if (!currentQuestionId || questionBusy) return;
+            questionBusy = true;
+            $("question-submit").disabled = true;
+            $("question-cancel").disabled = true;
+            try {
+                await api(`/api/questions/${currentQuestionId}`, {
+                    method: "POST",
+                    body: JSON.stringify({
+                        answer: answer || "",
+                        option_index: optionIndex,
+                        cancelled: Boolean(cancelled),
+                    }),
+                });
+                hideQuestion();
+            } catch (error) {
+                setModalWarning($("question-status"), error.message);
+                questionBusy = false;
+                $("question-submit").disabled = false;
+                $("question-cancel").disabled = false;
+            }
+        }
+
+        $("approval-deny").addEventListener("click", () => resolveApproval("deny"));
+        $("approval-once").addEventListener("click", () => resolveApproval("allow_once"));
+        $("approval-session").addEventListener("click", () => resolveApproval("allow_session"));
+        $("question-submit").addEventListener("click", () => {
+            const value = $("question-custom").value.trim();
+            if (!value) {
+                setModalWarning($("question-status"), "Wpisz odpowiedź albo wybierz opcję.");
+                return;
+            }
+            resolveQuestion(null, value);
+        });
+        $("question-custom").addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                $("question-submit").click();
+            }
+        });
+        $("question-cancel").addEventListener("click", () => resolveQuestion(null, "", true));
 
         // Motyw jasny / ciemny zapisywany na dysku w data/settings.json
         function applyTheme(theme, persist = false) {
@@ -1610,7 +2140,7 @@
             return list;
         }
 
-        function renderMessage(text, sender, attachments = []) {
+        function renderMessage(text, sender, attachments = [], tools = []) {
             messages.querySelector(".empty")?.remove();
             const parsed = sender === "agent" && text ? splitThinkTags(text) : null;
             if (parsed && !parsed.thinking && !parsed.answer && parsed.stopped) {
@@ -1636,6 +2166,11 @@
             const bubble = document.createElement("div");
             bubble.className = "bubble";
 
+            if (sender === "agent") {
+                const activity = createToolActivity(tools);
+                if (activity) bubble.append(activity);
+            }
+
             if (parsed) {
                 if (parsed.thinking) {
                     bubble.append(createThinkingElement(parsed.thinking, false));
@@ -1646,11 +2181,23 @@
                 bubble.append(answer);
             } else {
                 if (attachments.length) bubble.append(createAttachmentsElement(attachments));
-                if (text || !attachments.length) {
+                if (text) {
                     const content = document.createElement("span");
                     content.textContent = text;
                     bubble.append(content);
                 }
+            }
+
+            const hasAnswer = parsed
+                ? Boolean(parsed.answer && parsed.answer.trim())
+                : Boolean(text && text.trim());
+            if (sender === "agent" && !hasAnswer && !(parsed && parsed.stopped)) {
+                const note = document.createElement("div");
+                note.className = "answer-content no-answer";
+                note.textContent = Array.isArray(tools) && tools.length
+                    ? "Model użył narzędzia, ale nie zwrócił odpowiedzi. Spróbuj ponownie."
+                    : "(brak odpowiedzi)";
+                bubble.append(note);
             }
 
             body.append(label, bubble);
@@ -1728,10 +2275,11 @@
                 const chat = await api(`/api/chats/${id}`);
                 activeChatId = chat.id;
                 messages.replaceChildren();
-chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
+chat.messages.forEach(({ role, content, attachments = [], tools = [] }) => renderMessage(
                     content,
                     role === "user" ? "user" : "agent",
                     attachments.map((id) => ({ url: `/api/chats/${chat.id}/attachments/${id}`, name: "" })),
+                    tools,
                 ));
                 await repairInvalidMermaidBlocks(messages, id);
                 if (!chat.messages.length) renderEmpty();
@@ -1745,6 +2293,8 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
 
         function newChat(force = false) {
             if (streaming && !force) return;
+            hideApproval();
+            hideQuestion();
             activeChatId = null;
             renderEmpty();
             setTitle(NEW_CHAT_TITLE);
@@ -1794,6 +2344,8 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
             if (isCurrent && streaming) {
                 activeChatId = null;
                 controller?.abort();
+                hideApproval();
+                hideQuestion();
                 stopVoice();
             }
             try {
@@ -1831,7 +2383,59 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
             let rawReply = "";
             let streamThinking = "";
             let thinkingBox = null;
+            let toolActivity = null;
+            const toolEvents = [];
             let failed = false;
+
+            const updateToolActivity = (event) => {
+                const name = event.tool;
+                if (!name) return;
+                if (!toolActivity) {
+                    toolActivity = document.createElement("div");
+                    toolActivity.className = "tool-activity";
+                    bubble.insertBefore(toolActivity, bubble.firstChild);
+                }
+                const status = event.type === "tool_start" ? "running" : (event.status || "ok");
+                if (event.type === "tool_start") {
+                    const item = {
+                        name,
+                        source: event.source || "builtin",
+                        server: event.server || null,
+                        risk: Array.isArray(event.risk) ? event.risk : [],
+                        status,
+                        code: event.code || null,
+                    };
+                    toolEvents.push(item);
+                    toolActivity.append(createToolBadge(item));
+                    return;
+                }
+                let item = null;
+                for (let index = toolEvents.length - 1; index >= 0; index -= 1) {
+                    if (toolEvents[index].name === name && toolEvents[index].status === "running") {
+                        item = toolEvents[index];
+                        break;
+                    }
+                }
+                if (!item) {
+                    item = {
+                        name,
+                        source: event.source || "builtin",
+                        server: event.server || null,
+                        risk: Array.isArray(event.risk) ? event.risk : [],
+                        status,
+                        code: event.code || null,
+                    };
+                    toolEvents.push(item);
+                    toolActivity.append(createToolBadge(item));
+                } else {
+                    item.status = status;
+                    item.risk = Array.isArray(event.risk) ? event.risk : item.risk;
+                    item.code = event.code || item.code;
+                    toolActivity.replaceChildren(...toolEvents.map(createToolBadge));
+                }
+                if (event.approval_id && event.approval_id === currentApprovalId) hideApproval();
+                if (event.type === "tool_result" && name === "ask_user" && currentQuestionId) hideQuestion();
+            };
 
             const updateBubble = (doneThinking = false) => {
                 const parsed = splitThinkTags(rawReply);
@@ -1872,6 +2476,24 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
                 bubble.append(span);
             };
 
+            const showWarning = (messageText) => {
+                const span = document.createElement("span");
+                span.className = "warning";
+                span.textContent = `⚠ ${messageText}`;
+                bubble.append(span);
+            };
+
+            const resetAnswerForRetry = () => {
+                rawReply = "";
+                streamThinking = "";
+                if (thinkingBox) {
+                    thinkingBox.remove();
+                    thinkingBox = null;
+                }
+                answerEl.textContent = "";
+                answerEl.classList.remove("no-answer");
+            };
+
             try {
                 const response = await fetch("/api/chat", {
                     method: "POST",
@@ -1901,6 +2523,18 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
                     } else if (event.type === "token") {
                         rawReply += event.text;
                         updateBubble(false);
+                    } else if (event.type === "tool_start" || event.type === "tool_result") {
+                        updateToolActivity(event);
+                    } else if (event.type === "approval_required") {
+                        showApproval(event, bubble);
+                    } else if (event.type === "user_input_required") {
+                        showQuestion(event);
+                    } else if (event.type === "answer_reset") {
+                        resetAnswerForRetry();
+                    } else if (event.type === "warning") {
+                        showWarning(event.message);
+                    } else if (event.type === "approval_pending" || event.type === "question_pending") {
+                        // heartbeat; the modal is already visible
                     } else if (event.type === "error") {
                         showError(event.message);
                     }
@@ -1912,7 +2546,14 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split("\n");
                     buffer = lines.pop();
-                    lines.filter(Boolean).forEach((line) => handle(JSON.parse(line)));
+                    lines.filter(Boolean).forEach((line) => {
+                        try {
+                            handle(JSON.parse(line));
+                        } catch (error) {
+                            console.error("Nie udało się przetworzyć zdarzenia strumienia.", error);
+                            if (!failed) showError("Błąd przetwarzania odpowiedzi modelu.");
+                        }
+                    });
                 }
                 await repairInvalidMermaidBlocks(bubble, activeChatId);
             } catch (error) {
@@ -1922,6 +2563,10 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
                 const chatStillOpen = activeChatId !== null && bubble.isConnected;
                 controller = null;
                 setStreaming(false);
+                if (aborted) {
+                    hideApproval();
+                    hideQuestion();
+                }
                 dots.remove();
                 if (chatStillOpen) {
                     updateBubble(true);
@@ -1931,10 +2576,13 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
                             bubble.closest(".message")?.remove();
                         }
                         renderStoppedDivider();
-                    } else if (!finalParsed.answer && !streamThinking && !failed) {
-                        answerEl.textContent = "(brak odpowiedzi)";
+                    } else if (!finalParsed.answer.trim() && !failed) {
+                        answerEl.classList.add("no-answer");
+                        answerEl.textContent = toolEvents.length
+                            ? "Model użył narzędzia, ale nie zwrócił odpowiedzi. Spróbuj ponownie."
+                            : "(brak odpowiedzi)";
                     }
-                    if (finalParsed.answer && !failed && !aborted && settings.tts_enabled && settings.audio_enabled !== false) {
+                    if (finalParsed.answer.trim() && !failed && !aborted && settings.tts_enabled && settings.audio_enabled !== false) {
                         api("/api/tts/speak", { method: "POST", body: JSON.stringify({ text: finalParsed.answer }) })
                             .catch((error) => { micStatus.textContent = `Błąd TTS: ${error.message}`; });
                     }
@@ -1948,6 +2596,8 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
             if (streaming) {
                 controller?.abort();
                 stopVoice();
+                hideApproval();
+                hideQuestion();
                 return;
             }
             const text = promptInput.value.trim();
@@ -2030,12 +2680,127 @@ chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
             } else {
                 setTitle("Ustawienia");
                 loadModels();
+                loadTools();
             }
         }
 
         chatNav.addEventListener("click", () => activateView("chat"));
         settingsNav.addEventListener("click", () => activateView("settings"));
         $("new-chat").addEventListener("click", newChat);
+
+        let toolsData = null;
+
+        function policySelect(value, inherit = false) {
+            const select = document.createElement("select");
+            if (inherit) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "dziedzicz";
+                select.append(option);
+            }
+            ["allow", "ask", "deny"].forEach((policy) => {
+                const option = document.createElement("option");
+                option.value = policy;
+                option.textContent = policy;
+                select.append(option);
+            });
+            select.value = value || (inherit ? "" : "allow");
+            return select;
+        }
+
+        function renderToolPolicies(data) {
+            toolsData = data;
+            const riskList = $("risk-policy-list");
+            riskList.replaceChildren();
+            const overrides = settings.tool_risk_policies || {};
+            const riskDefaults = data.risk_policy_defaults || RISK_POLICY_DEFAULTS;
+            (data.risk_labels || []).forEach((label) => {
+                const row = document.createElement("div");
+                row.className = "risk-policy-row";
+                const name = document.createElement("label");
+                name.textContent = `Domyślnie dla ryzyka: ${label}`;
+                const select = policySelect(overrides[label] || riskDefaults[label] || "allow");
+                select.dataset.riskLabel = label;
+                row.append(name, select);
+                riskList.append(row);
+            });
+
+            const toolList = $("tool-policy-list");
+            toolList.replaceChildren();
+            const toolOverrides = settings.tool_policies || {};
+            (data.tools || []).forEach((tool) => {
+                const row = document.createElement("div");
+                row.className = "tool-policy-row";
+                const meta = document.createElement("div");
+                meta.className = "meta";
+                const name = document.createElement("span");
+                name.className = "name";
+                name.textContent = tool.name;
+                name.title = tool.description || tool.name;
+                const source = document.createElement("span");
+                source.className = "source";
+                const effective = tool.policy ? ` · obecnie: ${tool.policy}` : "";
+                source.textContent = (tool.source === "mcp"
+                    ? `MCP · ${tool.server || "serwer"}`
+                    : "narzędzie") + effective;
+                meta.append(name, source);
+                row.append(meta);
+                (tool.risk || []).forEach((label) => row.append(riskChip(label)));
+                const select = policySelect(toolOverrides[tool.name] || "", true);
+                select.dataset.toolName = tool.name;
+                row.append(select);
+                toolList.append(row);
+            });
+
+            const allowed = (data.allowed_directories || []).join(", ") || "brak";
+            $("allowed-dirs").textContent =
+                `Dozwolone katalogi (NLP_WORKSPACE / NLP_ALLOWED_DIRS): ${allowed}. ` +
+                `Timeout zgody: ${data.approval_timeout || 300} s.`;
+        }
+
+        async function loadTools() {
+            const status = $("tool-policy-status");
+            try {
+                const data = await api("/api/tools");
+                renderToolPolicies(data);
+                status.textContent = "";
+            } catch (error) {
+                status.textContent = error.message;
+            }
+        }
+
+        async function saveToolPolicies() {
+            const status = $("tool-policy-status");
+            const policies = {};
+            document.querySelectorAll("#tool-policy-list select[data-tool-name]").forEach((select) => {
+                if (select.value) policies[select.dataset.toolName] = select.value;
+            });
+            const riskPolicies = {};
+            document.querySelectorAll("#risk-policy-list select[data-risk-label]").forEach((select) => {
+                riskPolicies[select.dataset.riskLabel] = select.value;
+            });
+            try {
+                const data = await api("/api/tools/policies", {
+                    method: "PUT",
+                    body: JSON.stringify({ policies, risk_policies: riskPolicies }),
+                });
+                settings.tool_policies = data.tool_policies || policies;
+                settings.tool_risk_policies = data.tool_risk_policies || riskPolicies;
+                if (data.tools) renderToolPolicies({
+                    ...(toolsData || {}),
+                    ...data,
+                    risk_labels: toolsData?.risk_labels || [],
+                    risk_policy_defaults: toolsData?.risk_policy_defaults || RISK_POLICY_DEFAULTS,
+                    allowed_directories: toolsData?.allowed_directories || [],
+                    approval_timeout: toolsData?.approval_timeout || 300,
+                });
+                status.textContent = "Zapisano polityki narzędzi.";
+            } catch (error) {
+                status.textContent = error.message;
+            }
+        }
+
+        $("save-tool-policies").addEventListener("click", saveToolPolicies);
 
         function fillSettingsForm() {
             const audioOff = settings.audio_enabled === false;

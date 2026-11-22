@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Callable, Optional
 from openai import OpenAI
@@ -247,6 +248,98 @@ class OllamaHandler:
             Logger.printWarning(f"Warmup pominięty (serwer bez /api/generate?): {exc}")
             return False
 
+    @staticmethod
+    def _ShortDescription(value: Any, limit: int = 60) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) > limit:
+            return text[: limit - 1].rstrip() + "…"
+        return text
+
+    @classmethod
+    def _CompactSchema(cls, schema: Any, depth: int = 0) -> dict[str, Any]:
+        """Keep structure/types but drop long descriptions from tool schemas."""
+        if depth > 20 or not isinstance(schema, dict):
+            return {}
+        result: dict[str, Any] = {}
+        for key in (
+            "type", "enum", "default", "minimum", "maximum", "format",
+            "pattern", "minItems", "maxItems", "uniqueItems",
+        ):
+            value = schema.get(key)
+            if isinstance(value, (str, int, float, bool, list)) or value is None:
+                if value is not None:
+                    result[key] = value
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            result["properties"] = {
+                str(name): cls._CompactSchema(item, depth + 1)
+                for name, item in properties.items()
+                if isinstance(item, dict)
+            }
+        required = schema.get("required")
+        if isinstance(required, list):
+            result["required"] = [str(item) for item in required if isinstance(item, str)]
+        items = schema.get("items")
+        if isinstance(items, dict):
+            result["items"] = cls._CompactSchema(items, depth + 1)
+        elif isinstance(items, list):
+            result["items"] = [
+                cls._CompactSchema(item, depth + 1)
+                for item in items
+                if isinstance(item, dict)
+            ]
+        for key in ("anyOf", "oneOf", "allOf"):
+            value = schema.get(key)
+            if isinstance(value, list):
+                result[key] = [
+                    cls._CompactSchema(item, depth + 1)
+                    for item in value
+                    if isinstance(item, dict)
+                ]
+        additional = schema.get("additionalProperties")
+        if isinstance(additional, (bool, dict)):
+            result["additionalProperties"] = (
+                cls._CompactSchema(additional, depth + 1)
+                if isinstance(additional, dict) else additional
+            )
+        return result
+
+    @classmethod
+    def _CompactTools(cls, tools: list) -> list[dict[str, Any]]:
+        compact: list[dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            parameters = function.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {"type": "object", "properties": {}, "required": []}
+            compact.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": cls._ShortDescription(function.get("description")),
+                    "parameters": cls._CompactSchema(parameters),
+                },
+            })
+        return compact
+
+    def _EstimateToolTokens(self, tools: list | None = None) -> int:
+        if tools is None:
+            tools = self.ToolsHandle.get_tools_list() if self.ToolsHandle is not None else []
+        if not tools:
+            return 0
+        try:
+            serialized = json.dumps(self._CompactTools(tools), ensure_ascii=False)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, len(serialized) // 4)
+
     def EnsureContextBudget(
         self,
         messages: list,
@@ -258,11 +351,25 @@ class OllamaHandler:
             return
         num_ctx = self.GetNumCtx()
         reserve = max(256, int(reserve_tokens or self.reserve_tokens))
+        reserve = min(reserve, max(256, num_ctx // 2))
+        tool_tokens = self._EstimateToolTokens()
         effective_ratio = max(0.5, min(3.0, float(ratio or 1.0)))
-        budget = max(1024, int((num_ctx - reserve - 128) / effective_ratio))
+        available = num_ctx - reserve - 128 - tool_tokens
+        budget = max(256, int(available / effective_ratio))
+        history_tokens = Contx.ContextHandle.HistoryTokens(messages)
+        Logger.printInfo(
+            f"Context budget: num_ctx={num_ctx}, reserve={reserve}, "
+            f"tool_tokens={tool_tokens}, message_tokens={history_tokens}, "
+            f"budget={budget}"
+        )
+        if available <= 0:
+            Logger.printWarning(
+                "Kontekst modelu jest mniejszy niż rezerwa i schematy narzędzi; "
+                "prompt może zostać przycięty."
+            )
 
         # Wewnątrz budżetu - nic do robienia.
-        if Contx.ContextHandle.HistoryTokens(messages) <= budget:
+        if history_tokens <= budget:
             return
 
         # Przebij budgeta - odzysk: najpierw podsumowanie, potem Trim.
@@ -315,7 +422,9 @@ class OllamaHandler:
 
         tools = self.ToolsHandle.get_tools_list() if self.ToolsHandle is not None else []
         if tools:
-            kwargs["tools"] = tools
+            # Full schemas with long parameter descriptions do not fit a 4096-token
+            # model together with the system prompt. Types/structure are enough.
+            kwargs["tools"] = self._CompactTools(tools)
 
         Logger.printInfo(f"Sending request to {self.model}")
         return self.model, (extra_body or None), kwargs

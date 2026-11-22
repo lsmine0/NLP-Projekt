@@ -308,6 +308,7 @@ class CodeToolsTests(unittest.TestCase):
     def test_tool_handle_registration_and_parameter_isolation(self) -> None:
         (self.workspace / "app.py").write_text("X = 1\n", encoding="utf-8")
         handle = ToolHandle()
+        handle.configure_security(risk_policies={"write": "allow", "destructive": "allow"})
         register_code_tools(
             handle,
             workspace_dir=self.workspace,
@@ -358,21 +359,24 @@ class CodeToolsTests(unittest.TestCase):
         self.assertTrue(run_out["success"])
         self.assertEqual(run_out["result"]["stdout"].strip(), "2")
 
+        # Nieznane pole nie jest przekazywane do funkcji narzędzia; nie pozwala
+        # obejść polityki hosta (allow_execution pochodzi wyłącznie z rejestracji).
         bypass_attempt = json.loads(
             handle.execute_tool(
                 "run_python",
                 {"code": "print(1)", "allow_execution": True},
             )
         )
-        self.assertFalse(bypass_attempt["success"])
+        self.assertTrue(bypass_attempt["success"])
+        self.assertEqual(bypass_attempt["result"]["stdout"].strip(), "1")
 
     def test_tool_builder_includes_code_tools_by_default(self) -> None:
-        with_code = build_tools(files=False, math=False, web=False, code=True)
+        with_code = build_tools(files=False, math=False, web=False, code=True, images=False, interactions=False)
         self.assertEqual(
             [t["function"]["name"] for t in with_code.get_tools_list()],
             ["edit_file", "run_python"],
         )
-        without_code = build_tools(files=False, math=False, web=False, code=False)
+        without_code = build_tools(files=False, math=False, web=False, code=False, images=False, interactions=False)
         self.assertEqual(without_code.get_tools_list(), [])
 
     def test_edit_file_validates_json_syntax_and_edits_other_languages(self) -> None:

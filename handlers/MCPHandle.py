@@ -14,6 +14,7 @@ from typing import Any
 from mcp import StdioServerParameters
 
 from core import Logger
+from core.ToolPolicy import normalize_risk
 from handlers.MCPSchema import exposed_tool_name, sanitize_tool_input_schema
 from handlers.MCPRuntime import (
     MCPConfigError,
@@ -42,6 +43,8 @@ class MCPServerConfig:
     allow_all_tools: bool
     allow_tools: frozenset[str]
     deny_tools: frozenset[str]
+    ask_tools: frozenset[str]
+    risk: frozenset[str]
 
 
 def _expand(value: str) -> str:
@@ -63,7 +66,7 @@ def _as_string_list(value: Any, field: str, server_name: str) -> list[str]:
 
 
 def _parse_tools(raw_tools: Any, server_name: str) -> tuple[
-    bool, frozenset[str], frozenset[str]
+    bool, frozenset[str], frozenset[str], frozenset[str]
 ]:
     if raw_tools is None:
         raw_tools = {}
@@ -91,14 +94,8 @@ def _parse_tools(raw_tools: Any, server_name: str) -> tuple[
     ask_tools = _as_string_list(
         raw_tools.get("ask", []), "tools.ask", server_name
     )
-    if ask_tools:
-        Logger.printWarning(
-            f"MCP '{server_name}': polityka 'ask' nie jest jeszcze obsługiwana; "
-            "narzędzia z listy 'ask' zostaną zablokowane."
-        )
-        deny_tools.update(ask_tools)
 
-    return allow_all, allow_tools, frozenset(deny_tools)
+    return allow_all, allow_tools, frozenset(deny_tools), frozenset(ask_tools)
 
 
 def load_servers_config(path: str | Path | None) -> dict[str, MCPServerConfig]:
@@ -199,9 +196,13 @@ def load_servers_config(path: str | Path | None) -> dict[str, MCPServerConfig]:
         if not isinstance(enabled_raw, bool):
             raise MCPConfigError(f"MCP '{name}': pole 'enabled' musi być bool.")
 
-        allow_all, allow_tools, deny_tools = _parse_tools(
+        allow_all, allow_tools, deny_tools, ask_tools = _parse_tools(
             server_raw.get("tools"), name
         )
+        try:
+            risk = normalize_risk(server_raw.get("risk", ["external"]))
+        except ValueError as exc:
+            raise MCPConfigError(f"MCP '{name}': nieprawidłowe etykiety ryzyka: {exc}") from exc
 
         servers[name] = MCPServerConfig(
             name=name,
@@ -215,6 +216,8 @@ def load_servers_config(path: str | Path | None) -> dict[str, MCPServerConfig]:
             allow_all_tools=allow_all,
             allow_tools=allow_tools,
             deny_tools=deny_tools,
+            ask_tools=ask_tools,
+            risk=risk,
         )
 
     return servers
@@ -329,7 +332,7 @@ class MCPHandle:
             return False
         if config.allow_all_tools:
             return True
-        return tool_name in config.allow_tools
+        return tool_name in config.allow_tools or tool_name in config.ask_tools
 
     def _existing_exposed_name(self, server_name: str, remote_name: str) -> str | None:
         for exposed, pair in self._exposed.items():
@@ -381,6 +384,13 @@ class MCPHandle:
                         parameters=schema,
                         function=executor,
                         overwrite=True,
+                        risk=config.risk,
+                        # tools.ask is an explicit per-tool policy; otherwise the
+                        # registry's risk policy (external -> ask by default) applies.
+                        policy="ask" if remote_name in config.ask_tools else None,
+                        source="mcp",
+                        server=name,
+                        remote_name=remote_name,
                     )
                 except Exception as exc:
                     Logger.printWarning(
@@ -563,6 +573,8 @@ class MCPHandle:
                     "enabled": config.enabled,
                     "connected": self._runtime.is_alive(name),
                     "tools": list(self._tools_by_server.get(name, [])),
+                    "risk": list(config.risk),
+                    "ask": list(config.ask_tools),
                 }
                 for name, config in self._servers.items()
             ]

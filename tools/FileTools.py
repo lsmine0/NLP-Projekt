@@ -329,12 +329,16 @@ def register_tools(tool_handle: ToolHandle) -> None:
                 "content": content_property,
             },
             "required": ["path"],
+            "risk": ("write",),
+            "path_args": ("path",),
         },
         {
             "name": "read_file",
             "description": "Reads the content of a UTF-8 text file.",
             "properties": {"path": path_property},
             "required": ["path"],
+            "risk": ("read",),
+            "path_args": ("path",),
         },
         {
             "name": "write_file",
@@ -349,6 +353,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
                 "content": content_property,
             },
             "required": ["path", "content"],
+            "risk": ("write", "destructive"),
+            "path_args": ("path",),
         },
         {
             "name": "move_file",
@@ -368,12 +374,16 @@ def register_tools(tool_handle: ToolHandle) -> None:
                 },
             },
             "required": ["source", "destination"],
+            "risk": ("write", "destructive"),
+            "path_args": ("source", "destination"),
         },
         {
             "name": "delete_file",
             "description": "Deletes a file. Does not delete directories.",
             "properties": {"path": path_property},
             "required": ["path"],
+            "risk": ("write", "destructive"),
+            "path_args": ("path",),
         },
         {
             "name": "list_directory",
@@ -382,6 +392,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
             ),
             "properties": {"path": path_property},
             "required": ["path"],
+            "risk": ("read",),
+            "path_args": ("path",),
         },
         {
             "name": "search_in_files",
@@ -405,6 +417,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
                 },
             },
             "required": ["path", "text"],
+            "risk": ("read",),
+            "path_args": ("path",),
         },
         {
             "name": "get_file_info",
@@ -418,6 +432,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
                 "path": path_property,
             },
             "required": ["path"],
+            "risk": ("read",),
+            "path_args": ("path",),
         },
         {
             "name": "find_files",
@@ -467,6 +483,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
                 },
             },
             "required": ["path"],
+            "risk": ("read",),
+            "path_args": ("path",),
         },       
     ]
 

@@ -9,9 +9,11 @@
       "enabled": true,
       "timeout_s": 8,
       "startup_timeout_s": 20,
+      "risk": ["external"],
       "tools": {
         "allow": ["echo", "add"],
-        "deny": []
+        "deny": [],
+        "ask": []
       }
     }
   }

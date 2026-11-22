@@ -26,7 +26,8 @@ def test_tool_prompt_changes_when_a_tool_is_added() -> None:
 
     assert "test_lookup" not in before
     assert "test_lookup: Wyszukuje wpis testowy." in after
-    assert "query: string (wymagany)" in after
+    # Parametry są w schemacie tools; prompt nie duplikuje szczegółów.
+    assert "query: string (wymagany)" not in after
 
 
 def test_system_prompt_keeps_fixed_tool_section_after_user_prompt() -> None:
@@ -232,3 +233,20 @@ def test_mermaid_repair_uses_tool_free_provider_request() -> None:
     assert captured["messages"][0]["role"] == "system"
     assert "flowchart TD\nA -- B" in captured["messages"][1]["content"]
     assert "tools" not in captured
+
+
+def test_tool_prompt_contains_current_data_and_answer_rules() -> None:
+    tools = ToolHandle()
+    tools.create_tool(
+        "search_web",
+        "Wyszukuje aktualne informacje.",
+        properties={"query": {"type": "string"}},
+        required=["query"],
+        function=lambda query: {"success": True},
+        risk=("external",),
+    )
+    prompt = build_tool_prompt(tools, {})
+    assert "aktualnych cen" in prompt
+    assert "search_web" in prompt
+    assert "Po otrzymaniu wyniku narzędzia zawsze" in prompt
+    assert "Nie kończ tury samym procesem myślenia" in prompt

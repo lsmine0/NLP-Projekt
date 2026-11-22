@@ -190,6 +190,8 @@ def register_tools(tool_handle: ToolHandle) -> None:
     bez przeciekania stanu między sesjami.
     """
     for definition in IMAGE_TOOL_DEFINITIONS:
+        definition = dict(definition)
+        definition.setdefault("risk", ("read",))
         tool_handle.create_tool(**definition)
         name = definition["name"]
         tool_handle.register_function(name, AVAILABLE_IMAGE_TOOLS[name])
