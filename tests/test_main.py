@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -170,6 +171,17 @@ def test_build_runtime_and_close_releases_resources(
 def test_webgui_exposes_start_gui_without_side_effects_on_import() -> None:
     assert callable(WebGui.start_gui)
     assert WebGui.app is not None
+
+
+def test_webgui_serves_locally_bundled_markdown_libraries() -> None:
+    client = TestClient(WebGui.app)
+    page = client.get("/")
+    assert page.status_code == 200
+    assert '/vendor/marked.min.js' in page.text
+    assert '/vendor/purify.min.js' in page.text
+    assert '/vendor/mermaid.min.js' in page.text
+    for library in ("marked.min.js", "purify.min.js", "mermaid.min.js"):
+        assert client.get(f"/vendor/{library}").status_code == 200
 
 
 def test_put_settings_updates_system_prompt_and_rejects_non_text(

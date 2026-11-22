@@ -281,6 +281,14 @@ class OllamaHandler:
             **kwargs,
         )
 
+    def ChatNoTools(self, messages, **kwargs):
+        return self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            stream=False,
+            **kwargs,
+        )
+
     def ChatStream(self, messages, auto_budget: Optional[bool] = None, **kwargs):
         model, extra_body, kwargs = self._Prepare(kwargs)
         if auto_budget is None:

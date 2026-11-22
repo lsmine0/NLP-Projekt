@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 import json
+import re
 import sys
 import threading
 from pathlib import Path
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import uvicorn
 from fastapi import APIRouter, FastAPI, File, UploadFile, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core import Logger
@@ -24,6 +26,7 @@ from types import SimpleNamespace
 from contextlib import asynccontextmanager
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+FRONTEND_VENDOR = FRONTEND.parent / "vendor"
 HOST = "127.0.0.1"
 PORT = 8000
 
@@ -68,6 +71,16 @@ class ChatRequest(BaseModel):
     chat_id: str | None = None
     message: str = ""
     attachments: list[str] = Field(default_factory=list)  # ID z POST /api/attachments
+
+
+class MermaidRepairRequest(BaseModel):
+    source: str = Field(max_length=6000)
+    error: str = Field(max_length=2000)
+
+
+class MermaidSourceUpdateRequest(BaseModel):
+    original_source: str = Field(max_length=6000)
+    corrected_source: str = Field(max_length=6000)
 
 
 class SpeakRequest(BaseModel):
@@ -376,6 +389,53 @@ def chat(request: ChatRequest, http_request: Request = None):
     return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
+@router.post("/api/chats/{chat_id}/mermaid/repair")
+def repair_mermaid(
+    chat_id: str, request: MermaidRepairRequest, http_request: Request = None
+):
+    state = _state(http_request)
+    try:
+        state.store.get(chat_id)
+    except KeyError:
+        return error("Nie znaleziono czatu.", 404)
+
+    agent = get_agent(chat_id, http_request)
+    repair = getattr(agent, "repair_mermaid", None)
+    if not callable(repair):
+        return error("Automatyczna naprawa Mermaid nie jest dostępna.", 503)
+    try:
+        response = repair(request.source, request.error)
+    except Exception:
+        Logger.printError("Automatyczna naprawa diagramu Mermaid nieudana.")
+        return error("Model nie mógł naprawić składni diagramu.", 502)
+
+    match = re.search(r"```mermaid[ \t]*\r?\n([\s\S]*?)```", response, re.IGNORECASE)
+    if not match:
+        return error("Model nie zwrócił poprawionego bloku Mermaid.", 502)
+    corrected_source = match.group(1).strip("\r\n")
+    if not corrected_source or len(corrected_source) > 6000:
+        return error("Model zwrócił nieprawidłowy diagram Mermaid.", 502)
+    return {"source": corrected_source}
+
+
+@router.put("/api/chats/{chat_id}/mermaid")
+def save_mermaid_repair(
+    chat_id: str, request: MermaidSourceUpdateRequest, http_request: Request = None
+):
+    state = _state(http_request)
+    try:
+        if not state.store.replace_last_mermaid_source(
+            chat_id, request.original_source, request.corrected_source
+        ):
+            return error("Nie znaleziono bloku Mermaid do zapisania.", 409)
+        agent = state.sessions.get(chat_id)
+        if agent is not None:
+            agent.load_history(state.store.get(chat_id)["messages"])
+    except KeyError:
+        return error("Nie znaleziono czatu.", 404)
+    return {"ok": True}
+
+
 # Endpointy głosu (STT / TTS)
 @router.post("/api/stt/start")
 def stt_start(request: Request = None):
@@ -484,6 +544,7 @@ def create_app(*, runtime=None, runtime_factory=None):
                 current.close()
 
     application = FastAPI(lifespan=lifespan)
+    application.mount("/vendor", StaticFiles(directory=FRONTEND_VENDOR), name="vendor")
     application.include_router(router)
     return application
 

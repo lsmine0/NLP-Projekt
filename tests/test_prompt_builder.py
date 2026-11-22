@@ -67,7 +67,115 @@ def test_create_agent_passes_composed_prompt_to_agent(monkeypatch) -> None:
     assert isinstance(agent, FakeAgent)
     assert "Odpowiadaj zwięźle." in captured["system_prompt"]
     assert "sample: Przykładowe narzędzie." in captured["system_prompt"]
+    assert "```mermaid" in captured["system_prompt"]
+    assert "Nie zastępuj diagramu kodem aplikacji" in captured["system_prompt"]
+    assert "A -->|tekst etykiety| B" in captured["system_prompt"]
+    assert "Note over A,B: tekst" in captured["system_prompt"]
+    assert "Nie używaj narzędzi" in captured["system_prompt"]
+    assert "nie twórz ani nie wyszukuj plików .mermaid" in captured["system_prompt"]
     assert captured["tool_handle"] is tools
+
+
+def test_mermaid_request_is_streamed_without_tools() -> None:
+    from types import SimpleNamespace
+
+    from core.AgentAdapter import OllamaAgent
+
+    tools = ToolHandle()
+    captured = {}
+
+    class FakeProvider:
+        model = "test-model"
+        ToolsHandle = tools
+
+        def ChatNoTools(self, messages, **kwargs):
+            captured.update(kwargs)
+            captured["messages"] = messages
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=(
+                                '{"type":"flowchart","direction":"TD",'
+                                '"nodes":[{"id":"frontend","label":"Frontend"},'
+                                '{"id":"backend","label":"Backend"}],'
+                                '"edges":[{"from":"frontend","to":"backend"}]}'
+                            )
+                        )
+                    )
+                ]
+            )
+
+        def ChatStream(self, messages, **kwargs):
+            raise AssertionError("Mermaid generation must not stream with tools.")
+
+    agent = OllamaAgent(
+        "http://localhost:11434/v1",
+        "test-model",
+        system_prompt="Create Mermaid diagrams inline; do not use tools.",
+        tool_handle=tools,
+        provider=FakeProvider(),
+    )
+    agent.flow.context.append(
+        {"role": "assistant", "content": "Create lifecycle.mermaid with a tool."}
+    )
+
+    events = list(agent.stream("Create an architecture diagram in Mermaid."))
+
+    assert events == [
+        {
+            "type": "token",
+            "text": (
+                '```mermaid\nflowchart TD\nn0["Frontend"]\n'
+                'n1["Backend"]\nn0 --> n1\n```'
+            ),
+        }
+    ]
+    assert "tools" not in captured
+    assert [message["role"] for message in captured["messages"]] == ["system", "user"]
+    assert captured["messages"][-1]["content"] == "Create an architecture diagram in Mermaid."
+    assert "lifecycle.mermaid" not in str(captured["messages"])
+
+
+def test_invalid_diagram_json_retries_and_fails_closed() -> None:
+    from types import SimpleNamespace
+
+    from core.AgentAdapter import OllamaAgent
+
+    tools = ToolHandle()
+    responses = ["not JSON", "still not JSON"]
+
+    class FakeProvider:
+        model = "test-model"
+        ToolsHandle = tools
+
+        def ChatNoTools(self, messages, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=responses.pop(0))
+                    )
+                ]
+            )
+
+        def ChatStream(self, messages, **kwargs):
+            raise AssertionError("Invalid Mermaid requests must not use tools.")
+
+    agent = OllamaAgent(
+        "http://localhost:11434/v1",
+        "test-model",
+        system_prompt="Create Mermaid diagrams inline; do not use tools.",
+        tool_handle=tools,
+        provider=FakeProvider(),
+    )
+
+    events = list(agent.stream("Create a flowchart for the process."))
+
+    assert len(responses) == 0
+    assert len(events) == 1
+    assert events[0]["type"] == "error"
+    assert "JSON-em" in events[0]["message"]
+    assert "mermaid" not in events[0]["message"]
 
 
 def test_settings_store_persists_system_prompt(tmp_path: Path) -> None:
@@ -78,3 +186,49 @@ def test_settings_store_persists_system_prompt(tmp_path: Path) -> None:
 
     assert updated["system_prompt"] == "Nowe instrukcje"
     assert store.get()["system_prompt"] == "Nowe instrukcje"
+
+
+def test_mermaid_repair_uses_tool_free_provider_request() -> None:
+    from types import SimpleNamespace
+
+    from core.AgentAdapter import OllamaAgent
+
+    tools = ToolHandle()
+    captured = {}
+
+    class FakeProvider:
+        model = None
+        ToolsHandle = tools
+
+        def GetModels(self):
+            return [SimpleNamespace(id="test-model")]
+
+        def SetModel(self, name):
+            self.model = name
+            return True
+
+        def ChatNoTools(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="```mermaid\nflowchart TD\nA --> B\n```"
+                        )
+                    )
+                ]
+            )
+
+    agent = OllamaAgent(
+        "http://localhost:11434/v1",
+        "test-model",
+        system_prompt="",
+        tool_handle=tools,
+        provider=FakeProvider(),
+    )
+    repaired = agent.repair_mermaid("flowchart TD\nA -- B", "Parse error")
+
+    assert "```mermaid" in repaired
+    assert captured["messages"][0]["role"] == "system"
+    assert "flowchart TD\nA -- B" in captured["messages"][1]["content"]
+    assert "tools" not in captured
