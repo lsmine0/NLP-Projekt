@@ -95,11 +95,36 @@ def error(message: str, status: int = 400, code: str | None = None) -> JSONRespo
 
 
 # Kody AttachmentError -> status HTTP (GUI rozróżnia błędy po polu "code")
-_ATTACHMENT_STATUS = {"empty": 400, "bad_format": 415, "too_large": 413, "not_found": 404}
+_ATTACHMENT_STATUS = {
+    "empty": 400,
+    "bad_format": 415,
+    "too_large": 413,
+    "not_found": 404,
+    # #51: model bez capability 'vision' - obraz nie wysłany, message nie zapisana.
+    "vision_unsupported": 415,
+}
 
 
 def attachment_error(exc: AttachmentError) -> JSONResponse:
     return error(str(exc), _ATTACHMENT_STATUS.get(exc.code, 400), exc.code)
+
+
+def agent_vision_support(agent) -> bool | None:
+    """Próbujemy dowiedzieć się, czy model agenta akceptuje obrazki (#51).
+
+    Zwraca True/False albo None, gdy probe nie jest możliwa (atrapa w testach,
+    provider bez metadanych) – wtedy GUI nie blokuje wysyłki. False = jawnie
+    unsupported, więc obraz nie poleci jako plain text.
+    """
+    probe = getattr(agent, "supports_vision", None)
+    if not callable(probe):
+        return None
+    try:
+        result = probe()
+    except Exception:
+        Logger.printWarning("Nie można ustalić capability 'vision' modelu.")
+        return None
+    return result if isinstance(result, bool) else None
 
 
 def public_attachment(attachment: Attachment) -> dict:
@@ -163,9 +188,20 @@ def get_agent(chat_id: str, request: Request = None) -> AgentBase:
     settings_store = state.settings_store
     sessions = state.sessions
     agent_factory = state.agent_factory
+    attachment_store = state.attachment_store
     agent = sessions.get(chat_id)
     if agent is None:
         agent = agent_factory(settings_store.get())
+        # #51: spina store z sesją agenta (per czat) - ID -> data URL przy wysyłce,
+        # nigdy ścieżka z dysku. Agenci-atrapy bez bindera pracują jak dotychczas.
+        binder = getattr(agent, "bind_attachments", None)
+        if callable(binder):
+            try:
+                binder(attachment_store, chat_id)
+            except Exception as exc:
+                Logger.printWarning(
+                    f"Nie można spiąć magazynu załączników z sesją: {exc}"
+                )
         agent.load_history(store.get(chat_id)["messages"])
         sessions[chat_id] = agent
     return agent
@@ -355,7 +391,17 @@ def chat(request: ChatRequest, http_request: Request = None):
         return attachment_error(exc)
 
     agent = get_agent(chat_id, http_request)
-    # TODO(#51): sprawdzenie vision modelu tutaj, przed zapisem wiadomości do historii
+    # #51: pre-flight capability 'vision' PRZED zapisaniem message w history - model
+    # bez vision nie może dostać obrazu jako plain text (defence-in-depth: identyczny
+    # gate jest tez w AgentAdapter.OllamaAgent.stream()).
+    if attachment_ids and agent_vision_support(agent) is False:
+        Logger.printWarning("Model bez capability 'vision' - wysyłka obrazu zablokowana.")
+        return error(
+            "Wybrany model nie obsługuje analizy obrazów (capability 'vision'). "
+            "Zmień model w ustawieniach albo usuń załączniki.",
+            415,
+            "vision_unsupported",
+        )
 
     def events():
         yield json.dumps({"type": "chat_id", "id": chat_id}) + "\n"
@@ -528,7 +574,10 @@ def create_app(*, runtime=None, runtime_factory=None):
             state = ApiState(
                 store=current.chat_store, settings_store=current.settings_store,
                 stt=current.stt, tts=current.tts,
-                attachment_store=AttachmentStore(current.settings_store.path.parent / 'attachments'),
+                # #51: preferuj store z runtime (NLP_WORKSPACE/CHAT_DATA_DIR); fallback
+                # dla starych AppRuntime bez tego pola.
+                attachment_store=(getattr(current, 'attachment_store', None)
+                                  or AttachmentStore(current.settings_store.path.parent / 'attachments')),
                 agent_factory=current.agent_factory, audio_enabled=current.audio_enabled,
                 runtime=current,
             )

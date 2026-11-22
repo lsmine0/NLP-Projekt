@@ -212,3 +212,45 @@ def test_injected_runtime_is_not_closed_by_app_owner(tmp_path):
     runtime.close()
     runtime.close()
     assert runtime.provider.closed == 1
+
+
+def test_attachment_upload_reaches_provider_as_path_free_data_url(tmp_path):
+    """End-to-end #51: upload -> /api/chat -> payload bez ścieżki z dysku."""
+    import io
+    from PIL import Image
+
+    app, providers = setup_app(tmp_path)
+    with TestClient(app) as client:
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 6), "red").save(buffer, format="PNG")
+        upload = client.post("/api/attachments",
+                             files={"file": ("kot.png", buffer.getvalue(), "image/png")})
+        assert upload.status_code == 200
+        attachment_id = upload.json()["id"]
+
+        response = client.post("/api/chat",
+                               json={"message": "opisz", "attachments": [attachment_id]})
+        assert response.status_code == 200
+        assert {'type': 'token', 'text': 'Odpowiedź testowa'} in [
+            json.loads(line) for line in response.text.splitlines() if line.strip()]
+
+        # Session provider (drugi created) dostał multimodalny payload...
+        session_provider = providers[-1]
+        assert session_provider.chats, "provider nie otrzymał messages"
+        sent_user = [m for m in session_provider.chats[-1] if m.get('role') == 'user'][-1]
+        parts = sent_user['content']
+        assert isinstance(parts, list) and len(parts) >= 2   # text + manifest + image
+        assert any(p.get('type') == 'image_url' for p in parts)
+        url = [p for p in parts if p.get('type') == 'image_url'][0]['image_url']['url']
+        assert url.startswith('data:image/png;base64,')
+
+        # ...a nigdzie w zapytaniu nie ma ścieżki store ani tmp_path (#51).
+        store_dir = str(app.state.api.attachment_store.directory)
+        dumped = json.dumps(session_provider.chats[-1])
+        assert store_dir not in dumped and '/attachments/' not in dumped
+
+        # Kontekst zapisany w czacie: ID załącznika, nie base64/ścieżka.
+        chat_id = [json.loads(line) for line in response.text.splitlines()
+                   if line.strip()][0]['id']
+        stored = client.get(f'/api/chats/{chat_id}').json()['messages'][0]
+        assert stored['attachments'] == [attachment_id]

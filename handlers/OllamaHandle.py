@@ -35,6 +35,8 @@ class OllamaHandler:
         self.request_timeout = request_timeout
         self.model = None
         self.thinking = None
+        # #51: jedna probe /api/show per model (capabilities + num_ctx), kasowana w SetModel.
+        self._model_info_cache: dict[str, Any] = {}
         self.ToolsHandle = tool_handle
         self.reserve_tokens = max(256, int(reserve_tokens))
         self.auto_budget = bool(auto_budget)
@@ -48,6 +50,8 @@ class OllamaHandler:
 
     def SetModel(self, ModelName):
         if ModelName in [model.id for model in self.GetModels()]:
+            # #51: stary cache metadanych (capabilities/vision, num_ctx) jest nieaktualny.
+            self._model_info_cache.clear()
             self.model = ModelName
             Logger.printInfo(f"Model {ModelName} set on endpoint.")
             return True
@@ -56,9 +60,25 @@ class OllamaHandler:
             return False
         
     def GetModelInfo(self):
+        """Metadane modelu z cache'em (#51): odpytujemy /api/show raz per model.
+
+        Cache'ujemy również wynik pusty – powtórne odpytywanie przy każdej iteracji
+        flow dokładałoby round-trip (patrz reports/DIAGNOZA_CZASU.md). SetModel()
+        kasuje cache, więc probe powtarza się po zmianie modelu.
+        """
         if not self.model:
             Logger.printError("Get info on Invalid model.")
             return {}
+        cached = self._model_info_cache.get(self.model)
+        if cached is not None:
+            return cached
+        info = self._FetchModelInfo()
+        if not isinstance(info, dict):
+            info = {}
+        self._model_info_cache[self.model] = info
+        return info
+
+    def _FetchModelInfo(self):
             
         native_url = self.base_url.removesuffix("/v1")
         headers = {}
@@ -99,8 +119,11 @@ class OllamaHandler:
             Logger.printWarning(f"GET /props fallback failed, using default context: {exc}")
             return {}
 
-    def GetCapabilities(self):
-        return self.GetModelInfo().get("capabilities", [])      
+    def GetCapabilities(self) -> list:
+        """Lista capabilities z /api/show (z cache'em); [] gdy server jej nie podał."""
+        info = self.GetModelInfo()
+        capabilities = info.get("capabilities") if isinstance(info, dict) else None
+        return list(capabilities) if isinstance(capabilities, (list, tuple)) else []      
 
     def GetThinking(self):
         return self.GetModelInfo().get("thinking")
@@ -122,8 +145,38 @@ class OllamaHandler:
 
         self.thinking = level
 
-    def GetVision(self):
-        return "vision" in self.GetCapabilities()          
+    def supports_vision(self) -> Optional[bool]:
+        """Czy model przyjmuje obrazki (vision): True/False albo None (nieustalable).
+
+        Tri-state (#51): jawne False = wysyłka obrazu blokowana z czytelny błędem;
+        None = provider nie podał capabilities (/props fallback, server bez
+        metadanych) – adapter traktuje to jako allow, żeby nie penalizować
+        false-negativów.
+        """
+        if not self.model:
+            return None
+        info = self.GetModelInfo()
+        if not isinstance(info, dict):
+            return None
+        capabilities = info.get("capabilities")
+        if isinstance(capabilities, (list, tuple)) and capabilities:
+            for capability in capabilities:
+                text = str(capability).lower()
+                if "vision" in text or "image" in text:
+                    return True
+            return False
+        # Brak capabilities: szukamy hintów w model_info (projector/encoder wizualny).
+        model_info = info.get("model_info")
+        if isinstance(model_info, dict):
+            for key in model_info:
+                lowered = str(key).lower()
+                if "vision" in lowered or "image_encoder" in lowered or "mmproj" in lowered:
+                    return True
+        return None
+
+    def GetVision(self) -> bool:
+        """Stary kontrakt bool: True tylko gdy vision byl potwierdzony."""
+        return self.supports_vision() is True          
   
     def GetNumCtx(self) -> int:
         if not self.model:

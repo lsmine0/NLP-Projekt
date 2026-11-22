@@ -1,6 +1,32 @@
 import json
 from typing import Any, Dict, List, Optional
+import contextvars
 import inspect
+from contextlib import contextmanager
+
+# #51: zakres sesji (chat_id + attachment_store) widoczny dla narzędzi.
+# ContextVar NIE propaguje się do wątków ThreadPoolExecutor (AgentFlow._ExecuteToolCalls),
+# dlatego scope ustawia się WEWNĄTRZ zadania submitowanego do executora
+# (AgentFlow._RunToolWithScope), a nie przed submit(). tools/ImageTools.py pyta przez
+# current_tool_session() - inaczej narzędzie nie znałoby, z którego czatu pochodzi ID.
+_TOOL_SESSION: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "tool_session", default=None
+)
+
+
+def current_tool_session() -> Optional[dict]:
+    """Zakres bieżącej sesji: {'chat_id': ..., 'attachment_store': ...} albo None."""
+    return _TOOL_SESSION.get()
+
+
+@contextmanager
+def use_tool_session(scope):
+    """Ustawia zakres narzędzi w wątku wykonującym tool i sprząta po nim (#51)."""
+    token = _TOOL_SESSION.set(dict(scope) if isinstance(scope, dict) else {})
+    try:
+        yield _TOOL_SESSION.get()
+    finally:
+        _TOOL_SESSION.reset(token)
 
 
 class ToolErrorText(str):

@@ -554,7 +554,7 @@
             outline: 0;
         }
         #prompt::placeholder { color: var(--text-muted); }
-        #send, #microphone {
+        #send, #microphone, #attach {
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -568,8 +568,94 @@
         #send { color: #fff; background: var(--accent); }
         #send:hover { background: var(--accent-hover); }
         #send.stop { background: var(--danger); }
-        #microphone { color: var(--text-secondary); background: var(--bg-subtle); }
-        #microphone:hover:not(:disabled) { background: var(--bg-hover); }
+        #microphone, #attach { color: var(--text-secondary); background: var(--bg-subtle); }
+        #microphone:hover:not(:disabled), #attach:hover { background: var(--bg-hover); }
+
+        /* Załączniki: oczekujące miniatury nad polem wiadomości */
+        #attachment-tray {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            padding: 0 2px;
+        }
+        #attachment-tray[hidden] { display: none; }
+        .pending-thumb {
+            position: relative;
+            width: 58px;
+            height: 58px;
+            flex: 0 0 58px;
+            border-radius: 9px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-subtle);
+            box-shadow: var(--shadow-sm);
+        }
+        .pending-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+        .pending-thumb.uploading img { opacity: 0.45; }
+        .pending-thumb .spinner {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-primary);
+            font-size: 20px;
+        }
+        .pending-thumb .spinner i { animation: spin 0.9s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .pending-thumb .thumb-remove {
+            position: absolute;
+            top: -7px;
+            right: -7px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            padding: 0;
+            border: 1px solid var(--border-color);
+            border-radius: 50%;
+            color: var(--text-primary);
+            background: var(--bg-surface);
+            font-size: 11px;
+        }
+        .pending-thumb .thumb-remove:hover { color: #fff; background: var(--danger); border-color: var(--danger); }
+        #attachment-status { margin: 0; color: var(--danger); font-size: 12px; }
+        #attachment-status:empty { display: none; }
+        #composer-wrap.drag-over #composer {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+        #drop-hint { display: none; margin: 0; padding: 0 2px; color: var(--accent-text); font-size: 12px; }
+        #composer-wrap.drag-over #drop-hint { display: block; }
+
+        /* Załączniki w historii rozmowy */
+        .msg-attachments {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-start;
+            gap: 6px;
+        }
+        .msg-attachments img {
+            display: block;
+            max-width: 220px;
+            max-height: 220px;
+            object-fit: cover;
+            border-radius: 8px;
+            background: var(--bg-subtle);
+        }
+        .msg-attachments .missing {
+            padding: 8px 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            opacity: 0.8;
+            background: rgba(0, 0, 0, 0.15);
+        }
         #microphone:disabled { opacity: 0.45; cursor: not-allowed; }
         #microphone.listening {
             color: #fff;
@@ -846,7 +932,16 @@
         </section>
 
         <div id="composer-wrap">
+            <p id="drop-hint">Upuść obrazy, aby dołączyć je do wiadomości</p>
+            <div id="attachment-tray" hidden>
+                <p id="attachment-status" role="status" aria-live="polite"></p>
+            </div>
             <form id="composer">
+                <button id="attach" type="button" aria-label="Dodaj obraz" title="Dodaj obraz">
+                    <i class="ph ph-paperclip"></i>
+                </button>
+                <input id="file-input" type="file" multiple hidden
+                    accept="image/png,image/jpeg,image/webp,image/gif">
                 <textarea id="prompt" rows="1" placeholder="Napisz wiadomość do Jarvisa..." aria-label="Wiadomość"></textarea>
                 <button id="microphone" type="button" aria-label="Włącz mikrofon" aria-pressed="false" title="Mikrofon">
                     <i class="ph ph-microphone" id="mic-icon"></i>
@@ -912,6 +1007,187 @@
         let controller = null;
         let recording = false;
         let autoScroll = true;
+
+        // Załączniki oczekujące na wysłanie: { file, previewUrl, id, uploading, removed }
+        const attachButton = $("attach");
+        const fileInput = $("file-input");
+        const attachmentTray = $("attachment-tray");
+        const attachmentStatus = $("attachment-status");
+        const DEFAULT_ATTACHMENT_LIMITS = {
+            max_bytes: 10 * 1024 * 1024,
+            max_per_message: 4,
+            mime_types: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+        };
+        let pendingAttachments = [];
+
+        function attachmentLimits() {
+            return { ...DEFAULT_ATTACHMENT_LIMITS, ...(settings.attachment_limits || {}) };
+        }
+
+        function setAttachmentStatus(text) {
+            attachmentStatus.textContent = text || "";
+            renderAttachmentTray();
+        }
+
+        function renderAttachmentTray() {
+            attachmentTray.querySelectorAll(".pending-thumb").forEach((el) => el.remove());
+            pendingAttachments.forEach((item) => {
+                const thumb = document.createElement("div");
+                thumb.className = "pending-thumb";
+                thumb.classList.toggle("uploading", item.uploading);
+                thumb.title = item.file.name;
+
+                const img = document.createElement("img");
+                img.src = item.previewUrl;
+                img.alt = item.file.name || "Obraz";
+                thumb.append(img);
+
+                if (item.uploading) {
+                    const spinner = document.createElement("span");
+                    spinner.className = "spinner";
+                    spinner.innerHTML = '<i class="ph ph-circle-notch"></i>';
+                    thumb.append(spinner);
+                }
+
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "thumb-remove";
+                remove.title = "Usuń obraz";
+                remove.setAttribute("aria-label", `Usuń ${item.file.name || "obraz"}`);
+                remove.innerHTML = '<i class="ph ph-x"></i>';
+                remove.addEventListener("click", () => removePendingAttachment(item));
+                thumb.append(remove);
+
+                attachmentTray.insertBefore(thumb, attachmentStatus);
+            });
+            attachmentTray.hidden = !pendingAttachments.length && !attachmentStatus.textContent;
+        }
+
+        // Walidacja po stronie klienta - te same limity co backend (z /api/settings)
+        function validateFile(file) {
+            const limits = attachmentLimits();
+            if (!limits.mime_types.includes(file.type)) {
+                return `„${file.name}”: nieobsługiwany format. Dozwolone: PNG, JPEG, WEBP, GIF.`;
+            }
+            if (file.size > limits.max_bytes) {
+                const mb = Math.round(limits.max_bytes / (1024 * 1024));
+                return `„${file.name}”: plik jest za duży (maks. ${mb} MB).`;
+            }
+            if (!file.size) return `„${file.name}”: plik jest pusty.`;
+            return null;
+        }
+
+        async function uploadAttachment(item) {
+            const form = new FormData();
+            form.append("file", item.file, item.file.name);
+            try {
+                const response = await fetch("/api/attachments", { method: "POST", body: form });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || `Błąd uploadu (${response.status})`);
+                item.id = data.id;
+                item.uploading = false;
+                if (item.removed) {
+                    // usunięty w trakcie uploadu - sprzątamy na serwerze
+                    fetch(`/api/attachments/${item.id}`, { method: "DELETE" }).catch(() => {});
+                    return;
+                }
+            } catch (error) {
+                pendingAttachments = pendingAttachments.filter((other) => other !== item);
+                URL.revokeObjectURL(item.previewUrl);
+                setAttachmentStatus(`„${item.file.name}”: ${error.message === "Failed to fetch" ? "nie udało się wysłać obrazu." : error.message}`);
+                return;
+            }
+            renderAttachmentTray();
+        }
+
+        function addFiles(files) {
+            const limits = attachmentLimits();
+            const errors = [];
+            for (const file of files) {
+                if (pendingAttachments.length >= limits.max_per_message) {
+                    errors.push(`Możesz dołączyć maks. ${limits.max_per_message} obrazy do jednej wiadomości.`);
+                    break;
+                }
+                const problem = validateFile(file);
+                if (problem) {
+                    errors.push(problem);
+                    continue;
+                }
+                const item = { file, previewUrl: URL.createObjectURL(file), id: null, uploading: true, removed: false };
+                pendingAttachments.push(item);
+                uploadAttachment(item);
+            }
+            setAttachmentStatus(errors.join(" "));
+        }
+
+        function removePendingAttachment(item) {
+            item.removed = true;
+            pendingAttachments = pendingAttachments.filter((other) => other !== item);
+            URL.revokeObjectURL(item.previewUrl);
+            if (item.id) fetch(`/api/attachments/${item.id}`, { method: "DELETE" }).catch(() => {});
+            setAttachmentStatus("");
+        }
+
+        // Po wysłaniu wiadomości podgląd przejmuje bąbelek w historii, więc nie zwalniamy URL-i
+        function takePendingAttachments() {
+            const taken = pendingAttachments.map((item) => ({ id: item.id, url: item.previewUrl, name: item.file.name }));
+            pendingAttachments = [];
+            setAttachmentStatus("");
+            return taken;
+        }
+
+        attachButton.addEventListener("click", () => fileInput.click());
+        fileInput.addEventListener("change", () => {
+            addFiles([...fileInput.files]);
+            fileInput.value = "";
+        });
+
+        // Przeciąganie plików na okno. preventDefault na dragover/drop jest konieczne -
+        // bez niego WebView2 otwiera upuszczony plik zamiast strony z czatem.
+        const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+        let dragDepth = 0;
+        window.addEventListener("dragenter", (event) => {
+            if (!hasFiles(event)) return;
+            event.preventDefault();
+            dragDepth += 1;
+            composerWrap.classList.add("drag-over");
+        });
+        window.addEventListener("dragover", (event) => {
+            if (!hasFiles(event)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+        });
+        window.addEventListener("dragleave", (event) => {
+            if (!hasFiles(event)) return;
+            dragDepth = Math.max(0, dragDepth - 1);
+            if (!dragDepth) composerWrap.classList.remove("drag-over");
+        });
+        window.addEventListener("drop", (event) => {
+            if (!hasFiles(event)) return;
+            event.preventDefault();
+            dragDepth = 0;
+            composerWrap.classList.remove("drag-over");
+            if (!chatNav.classList.contains("active")) chatNav.click();
+            addFiles([...event.dataTransfer.files]);
+            promptInput.focus();
+        });
+
+        // Wklejanie obrazów ze schowka (np. zrzut ekranu). Zwykły tekst wkleja się normalnie.
+        promptInput.addEventListener("paste", (event) => {
+            const images = [...(event.clipboardData?.items || [])]
+                .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                .map((item) => item.getAsFile())
+                .filter(Boolean);
+            if (!images.length) return;
+            event.preventDefault();
+            const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+            addFiles(images.map((file, index) => {
+                const ext = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
+                // obrazy ze schowka zwykle nie mają sensownej nazwy (np. „image.png”)
+                const name = `wklejony-${stamp}${images.length > 1 ? `-${index + 1}` : ""}.${ext}`;
+                return new File([file], name, { type: file.type });
+            }));
+        });
 
         messages.addEventListener("scroll", () => {
             const distanceFromBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
@@ -1312,7 +1588,29 @@
             messages.scrollTop = messages.scrollHeight;
         }
 
-        function renderMessage(text, sender) {
+        // attachments: [{ url, name }] - obrazy wyświetlane nad treścią wiadomości
+        function createAttachmentsElement(attachments) {
+            const list = document.createElement("div");
+            list.className = "msg-attachments";
+            attachments.forEach(({ url, name }) => {
+                const img = document.createElement("img");
+                img.src = url;
+                img.alt = name || "Załącznik";
+                img.title = name || "";
+                img.loading = "lazy";
+                img.addEventListener("error", () => {
+                    const missing = document.createElement("span");
+                    missing.className = "missing";
+                    missing.textContent = "Obraz niedostępny";
+                    img.replaceWith(missing);
+                }, { once: true });
+                img.addEventListener("load", () => scrollToBottom(false), { once: true });
+                list.append(img);
+            });
+            return list;
+        }
+
+        function renderMessage(text, sender, attachments = []) {
             messages.querySelector(".empty")?.remove();
             const parsed = sender === "agent" && text ? splitThinkTags(text) : null;
             if (parsed && !parsed.thinking && !parsed.answer && parsed.stopped) {
@@ -1347,7 +1645,12 @@
                 setMarkdown(answer, parsed.answer);
                 bubble.append(answer);
             } else {
-                bubble.textContent = text;
+                if (attachments.length) bubble.append(createAttachmentsElement(attachments));
+                if (text || !attachments.length) {
+                    const content = document.createElement("span");
+                    content.textContent = text;
+                    bubble.append(content);
+                }
             }
 
             body.append(label, bubble);
@@ -1425,7 +1728,11 @@
                 const chat = await api(`/api/chats/${id}`);
                 activeChatId = chat.id;
                 messages.replaceChildren();
-                chat.messages.forEach(({ role, content }) => renderMessage(content, role === "user" ? "user" : "agent"));
+chat.messages.forEach(({ role, content, attachments = [] }) => renderMessage(
+                    content,
+                    role === "user" ? "user" : "agent",
+                    attachments.map((id) => ({ url: `/api/chats/${chat.id}/attachments/${id}`, name: "" })),
+                ));
                 await repairInvalidMermaidBlocks(messages, id);
                 if (!chat.messages.length) renderEmpty();
                 setTitle(chat.title);
@@ -1507,10 +1814,10 @@
             try { await api("/api/tts/stop", { method: "POST" }); } catch (error) {}
         }
 
-        async function sendMessage(text) {
+        async function sendMessage(text, attachments = []) {
             stopVoice();
             autoScroll = true;
-            renderMessage(text, "user");
+            renderMessage(text, "user", attachments);
             const bubble = renderMessage("", "agent");
             const dots = createDotsElement();
             const answerEl = document.createElement("div");
@@ -1569,7 +1876,11 @@
                 const response = await fetch("/api/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ chat_id: activeChatId, message: text }),
+                    body: JSON.stringify({
+                        chat_id: activeChatId,
+                        message: text,
+                        attachments: attachments.map((item) => item.id),
+                    }),
                     signal: controller.signal,
                 });
                 if (!response.ok) {
@@ -1640,10 +1951,15 @@
                 return;
             }
             const text = promptInput.value.trim();
-            if (!text) return;
+            if (pendingAttachments.some((item) => item.uploading)) {
+                setAttachmentStatus("Poczekaj, aż obrazy się wyślą.");
+                return;
+            }
+            if (!text && !pendingAttachments.length) return;
+            const attachments = takePendingAttachments();
             promptInput.value = "";
             autoResizePrompt();
-            sendMessage(text).catch((error) => {
+            sendMessage(text, attachments).catch((error) => {
                 setStreaming(false);
                 renderMessage(`⚠ ${error.message}`, "agent");
             });

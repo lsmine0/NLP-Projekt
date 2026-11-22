@@ -17,6 +17,7 @@ from core.MermaidDiagrams import (
     serialize_diagram,
 )
 from core.PromptBuilder import build_system_prompt, build_tool_prompt
+from core.Attachments import AttachmentError, AttachmentResolver, attachment_part
 
 if TYPE_CHECKING:
     from core.Attachments import Attachment
@@ -48,6 +49,14 @@ class AgentBase:
     ) -> Iterator[dict]:
         raise NotImplementedError
 
+    def bind_attachments(self, attachment_store, chat_id: str | None = None) -> None:
+        """Spina magazyn załączników z sesją agenta (#51). Domyślnie unsupported."""
+        return None
+
+    def supports_vision(self) -> bool | None:
+        """True/False gdy model to raportuje; None = probe niemożliwa (allow + warning)."""
+        return None
+
     def run(self, user_text: str, attachments: list[Attachment] | None = None) -> str:
         parts = []
         for event in self.stream(user_text, attachments):
@@ -78,6 +87,8 @@ class OllamaAgent(AgentBase):
         tool_handle: ToolHandle | None = None,
         api_key: str | None = None,
         provider: ModelProvider | None = None,
+        attachment_store=None,
+        chat_id: str | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -97,6 +108,95 @@ class OllamaAgent(AgentBase):
         )
         self.handler: ModelProvider = self.flow.ollama
         self.history: list[dict] = self.flow.context
+        # #51: załączniki krążą wyłącznie jako ID; data URL powstaje przy budowaniu
+        # zapytania (AgentFlow._ApiMessages), więc ani ścieżki, ani base64 w history.
+        self.attachment_store = attachment_store
+        self.chat_id = chat_id
+        if attachment_store is not None:
+            self.bind_attachments(attachment_store, chat_id)
+
+    def bind_attachments(self, attachment_store, chat_id: str | None = None) -> None:
+        """Przypisuje magazyn załączników do tej sesji agenta/czatu (#51).
+
+        Resolver zamienia {'type':'attachment','id':...} na image_url z data URL tylko
+        w kopii payloadu – self.flow.context nadal trzyma referencje (ID), więc ani GUI,
+        ani history, ani model nie widzą base64 ani ścieżek na dysku.
+        """
+        self.attachment_store = attachment_store
+        self.chat_id = chat_id
+
+        # AttachmentResolver normalizuje obraz (prepare_image) i cache'uje data URL;
+        # zwraca KOPię payloadu, więc flow.context zostaje referencjami (ID) (#51).
+        self.flow.message_resolver = AttachmentResolver(attachment_store, chat_id)
+        # Scope dla narzędzi obrazowych (tools/ImageTools.py) - patrz B/#51.
+        self.flow.session_scope = {
+            "chat_id": chat_id,
+            "attachment_store": attachment_store,
+        }
+
+    def supports_vision(self) -> bool | None:
+        """Capability 'vision' bieżącego modelu: True/False albo None (nieustalable)."""
+        probe = getattr(self.handler, "supports_vision", None)
+        if not callable(probe):
+            return None
+        try:
+            result = probe()
+        except Exception as error:
+            Logger.printWarning(f"Nie można ustalić capability vision: {error}")
+            return None
+        return result if isinstance(result, bool) else None
+
+    @staticmethod
+    def _attachment_ids(attachments) -> list[str]:
+        """Normalizuje Attachment|str -> lista ID (kolejność zachowana, bez duplików)."""
+        ids: list[str] = []
+        for item in attachments or ():
+            attachment_id = item if isinstance(item, str) else getattr(item, "id", None)
+            if isinstance(attachment_id, str) and attachment_id and attachment_id not in ids:
+                ids.append(attachment_id)
+        return ids
+
+    @staticmethod
+    def _describe_attachments(attachments) -> str:
+        """Manifest metadanych (id, nazwa, MIME, wymiary) - NIGDY ścieżki z dysku (#51)."""
+        lines = []
+        for index, item in enumerate(attachments or (), start=1):
+            attachment_id = item if isinstance(item, str) else getattr(item, "id", "")
+            name = (getattr(item, "name", "") or "").strip()
+            mime = str(getattr(item, "mime", "") or "")
+            width = getattr(item, "width", 0)
+            height = getattr(item, "height", 0)
+            details = []
+            if attachment_id:
+                details.append(f"id={attachment_id}")
+            if name:
+                details.append(f'nazwa="{name}"')
+            if mime:
+                details.append(f"typ={mime}")
+            if width and height:
+                details.append(f"{width}x{height} px")
+            lines.append(f"{index}. " + (", ".join(details) or "(brak metadanych)"))
+        if not lines:
+            return ""
+        return (
+            "Załączniki w tej wiadomości (dostępne jako obraz, bez ścieżki na dysku):\n"
+            + "\n".join(lines)
+        )
+
+    def _build_user_content(self, user_text: str, attachments) -> list[dict]:
+        """Treść multimodalna: tekst (+ manifest metadanych) + referencje załączników."""
+        text = (user_text or "").strip()
+        manifest = self._describe_attachments(attachments)
+        parts: list[dict] = []
+        if text and manifest:
+            parts.append({"type": "text", "text": f"{text}\n\n{manifest}"})
+        elif text:
+            parts.append({"type": "text", "text": text})
+        elif manifest:
+            parts.append({"type": "text", "text": manifest})
+        for attachment_id in self._attachment_ids(attachments):
+            parts.append(attachment_part(attachment_id))
+        return parts or [{"type": "text", "text": text}]
 
     def reset(self) -> None:
         self.flow.context.clear()
@@ -132,9 +232,9 @@ class OllamaAgent(AgentBase):
     def stream(
         self, user_text: str, attachments: list[Attachment] | None = None
     ) -> Iterator[dict]:
-        if attachments:
-            # TODO(#51): konwersja do treści multimodalnej i sprawdzenie capability vision
-            yield {"type": "error", "message": "Obsługa obrazów nie jest jeszcze dostępna."}
+        attachment_ids = self._attachment_ids(attachments)
+        if attachment_ids and self.flow.message_resolver is None:
+            yield {"type": "error", "message": "Załączniki nie są dostępne dla tej sesji agenta."}
             return
         try:
             self._get_handler()
@@ -143,19 +243,42 @@ class OllamaAgent(AgentBase):
             yield {"type": "error", "message": "Nie można połączyć z modelem."}
             return
 
+        # Capability-gate: model bez 'vision' nie może dostać obrazu jako plain text.
+        if attachment_ids and self.supports_vision() is False:
+            model_name = self.handler.model or self.model or "wybrany model"
+            Logger.printWarning(f"Model {model_name} nie obsługuje capability 'vision'.")
+            yield {
+                "type": "error",
+                "message": (
+                    f"Model '{model_name}' nie obsługuje analizy obrazów (capability "
+                    "'vision'). Zmień model w ustawieniach albo usuń załączniki."
+                ),
+            }
+            return
+
+        # Scope dla narzędzi obrazowych: ID z bieżącego turnu (inspect_image(index=N)).
+        scope = dict(self.flow.session_scope or {})
+        scope["attachment_ids"] = list(attachment_ids)
+        self.flow.session_scope = scope
+
+        message = (
+            self._build_user_content(user_text, attachments)
+            if attachment_ids else user_text
+        )
+
         snapshot = list(self.flow.context)
         try:
-            if _MERMAID_REQUEST_RE.search(user_text):
+if _MERMAID_REQUEST_RE.search(user_text):
                 if _is_diagram_creation_request(user_text):
                     source = self._generate_mermaid_source(user_text)
                     answer = f"```mermaid\n{source}\n```"
                 else:
                     messages = [
-                        message
-                        for message in self.flow.context
-                        if message.get("role") == "system"
+                        msg
+                        for msg in self.flow.context
+                        if msg.get("role") == "system"
                     ]
-                    messages.append({"role": "user", "content": user_text})
+                    messages.append({"role": "user", "content": message})
                     response = self.handler.ChatNoTools(
                         messages=messages,
                         max_tokens=2048,
@@ -164,11 +287,11 @@ class OllamaAgent(AgentBase):
                     answer = response.choices[0].message.content
                     if not isinstance(answer, str) or not answer.strip():
                         raise RuntimeError("Model nie zwrócił odpowiedzi.")
-                ContextHandle.Add(self.flow.context, user_text, role="user")
+                ContextHandle.Add(self.flow.context, message, role="user")
                 ContextHandle.Add(self.flow.context, answer, role="assistant")
                 yield {"type": "token", "text": answer}
             else:
-                for event in self.flow.RunStream(user_text, as_events=True):
+                for event in self.flow.RunStream(message, as_events=True):
                     if isinstance(event, dict):
                         yield event
         except DiagramSpecError as error:
@@ -178,6 +301,11 @@ class OllamaAgent(AgentBase):
                 "type": "error",
                 "message": f"Nie udało się wygenerować diagramu: {error}",
             }
+        except AttachmentError as error:
+            # Załącznik z innego czatu / usunięty - komunikat bez ścieżki i tracebacku.
+            self.flow.context[:] = snapshot
+            Logger.printError("Nie można odczytać załącznika.")
+            yield {"type": "error", "message": str(error) or "Nie można odczytać załącznika."}
         except Exception as error:
             self.flow.context[:] = snapshot
             Logger.printError("Provider modelu zgłosił błąd.")

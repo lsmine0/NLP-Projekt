@@ -222,3 +222,74 @@ def test_settings_expose_attachment_limits(gui):
     assert limits["max_per_message"] == Attachments.MAX_PER_MESSAGE
     assert "image/png" in limits["mime_types"]
     assert "image/svg+xml" not in limits["mime_types"]
+
+
+class VisionLessAgent(FakeAgent):
+    """Agent bez capability 'vision' - testuje pre-flight 415 w /api/chat (#51)."""
+
+    def supports_vision(self):
+        return False
+
+
+class BindingAgent(FakeAgent):
+    """Zapisuje bind_attachments(...), żeby sprawdzić wiring sesji (#51)."""
+
+    def __init__(self):
+        super().__init__()
+        self.bound = []
+
+    def bind_attachments(self, attachment_store, chat_id=None):
+        self.bound.append((attachment_store, chat_id))
+
+
+def test_chat_rejects_images_when_model_has_no_vision(gui, monkeypatch):
+    agents = []
+
+    def factory(settings):
+        agent = VisionLessAgent()
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(WebGui, "agent_factory", factory)
+    attachment_id = upload(gui).json()["id"]
+
+    response, _ = send(gui, message="co to?", attachments=[attachment_id])
+    assert response.status_code == 415
+    assert response.json()["code"] == "vision_unsupported"
+    assert "nie obsługuje analizy obrazów" in response.json()["error"]
+    assert agents[0].calls == []                      # żadnego streamu do modelu
+
+    chat_id = gui.get("/api/chats").json()[0]["id"]
+    assert gui.get(f"/api/chats/{chat_id}").json()["messages"] == []  # history czysta
+
+
+def test_text_only_chat_works_even_without_vision(gui, monkeypatch):
+    agents = []
+
+    def factory(settings):
+        agent = VisionLessAgent()
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(WebGui, "agent_factory", factory)
+    response, events = send(gui, message="hej")
+    assert response.status_code == 200
+    assert {"type": "token", "text": "ok"} in events
+
+
+def test_attachments_are_bound_to_the_chat_session(gui, monkeypatch):
+    agents = []
+
+    def factory(settings):
+        agent = BindingAgent()
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(WebGui, "agent_factory", factory)
+    attachment_id = upload(gui).json()["id"]
+    _, events = send(gui, message="a", attachments=[attachment_id])
+    chat_id = events[0]["id"]
+
+    bound_store, bound_chat = agents[0].bound[-1]
+    assert bound_chat == chat_id
+    assert str(bound_store.directory) == str((gui.tmp_path / "attachments").resolve())

@@ -7,6 +7,7 @@ def build_tools(
     math: bool = True,
     web: bool = True,
     code: bool = True,
+    images: bool = True,
     workspace_dir=None,
 ) -> ToolHandle:
     """Zbuduj rejestr z wybranymi grupami narzędzi."""
@@ -36,6 +37,11 @@ def build_tools(
                 return call
             for name, function in AVAILABLE_FILE_TOOLS.items():
                 tool_handle.register_function(name, confined(function))
+    if images:
+        # #51: inspekcja załączników po ID (zakres sesji - handlers.ToolHandle).
+        from tools.ImageTools import register_tools as register_image_tools
+
+        register_image_tools(tool_handle)
     if math:
         from tools.MathTools import register_math_tools
 
