@@ -457,7 +457,12 @@ class RealTTS(TTSBase):
 
     def speak(self, text: str) -> None:
         self.handle.speak_stream((text,))
-        if not self.handle.wait():
+        try:
+            completed = self.handle.wait()
+        except KeyboardInterrupt:
+            self.handle.stop()
+            raise
+        if not completed:
             raise RuntimeError("Odtwarzanie mowy nie zakończyło się.")
         if self.handle.last_error is not None:
             raise self.handle.last_error
