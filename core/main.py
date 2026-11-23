@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
+import socket
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -604,7 +608,7 @@ def _render_cli_banner(
         print(f"\033[33m[Uwaga] {provider_warning}\033[0m")
         print(
             "\033[2mTryb offline: działają komendy (/chats, /load, /tts, /devices, "
-            "/logs, /reset, exit). Po uruchomieniu Ollamy po prostu wpisz wiadomość.\033[0m\n"
+            "/logs, /reset, exit). Po uruchomieniu Ollamy CLI połączy się automatycznie.\033[0m\n"
         )
 
 
@@ -758,43 +762,112 @@ def _extract_last_thinking(messages: list[dict]) -> str:
     return ""
 
 
-def _ensure_cli_provider_ready(runtime: AppRuntime, agent: AgentBase) -> tuple[bool, str | None]:
-    if not getattr(runtime, "provider_warning", None) and getattr(runtime.provider, "model", None):
+def _cli_prompt_text(offline: bool) -> str:
+    if offline:
+        return "\033[33m(offline)\033[0m \033[1;38;5;208m❯\033[0m "
+    return "\033[1;38;5;208m❯\033[0m "
+
+
+def _is_endpoint_reachable(endpoint: str, timeout: float = 0.5) -> bool:
+    parsed = urlsplit(endpoint)
+    host = parsed.hostname
+    if not host:
+        return True
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_cli_provider_ready(
+    runtime: AppRuntime,
+    agent: AgentBase,
+    *,
+    provider_lock: threading.Lock | None = None,
+    announce: bool = True,
+) -> tuple[bool, str | None]:
+    lock_ctx: Any = provider_lock if provider_lock is not None else contextlib.nullcontext()
+    with lock_ctx:
+        if not getattr(runtime, "provider_warning", None) and getattr(runtime.provider, "model", None):
+            return True, None
+
+        endpoint = getattr(runtime.provider, "base_url", None) or runtime.settings.get("ollama_endpoint", "")
+        try:
+            names = [m.id for m in runtime.provider.GetModels()]
+        except Exception:
+            msg = (
+                f"Brak połączenia z serwerem modeli ({endpoint}). "
+                "Uruchom Ollamę, aby wysyłać zapytania do modelu."
+            )
+            runtime.provider_warning = msg
+            return False, msg
+
+        if not names:
+            msg = f"Brak dostępnych modeli na serwerze ({endpoint})."
+            runtime.provider_warning = msg
+            return False, msg
+
+        cfg = runtime.config
+        cfg_model = cfg.model if cfg is not None else ""
+        target = cfg_model or runtime.settings.get("ollama_model") or names[0]
+        try:
+            selected = runtime.provider.SetModel(target)
+        except Exception:
+            selected = False
+        if not selected:
+            msg = f"Model '{target}' nie jest dostępny na serwerze ({endpoint})."
+            runtime.provider_warning = msg
+            return False, msg
+
+        runtime.provider_warning = None
+        if hasattr(agent, "model") and not getattr(agent, "model", ""):
+            setattr(agent, "model", runtime.provider.model)
+        if announce:
+            print(f"\033[32m[System] Połączono z serwerem modeli ({runtime.provider.model}).\033[0m")
         return True, None
 
+
+def _start_cli_provider_watcher(
+    runtime: AppRuntime,
+    agent: AgentBase,
+    provider_lock: threading.Lock,
+    stop_event: threading.Event,
+    waiting_for_input: threading.Event,
+    *,
+    interval: float = 2.0,
+    probe: Callable[[], bool] | None = None,
+) -> threading.Thread:
     endpoint = getattr(runtime.provider, "base_url", None) or runtime.settings.get("ollama_endpoint", "")
-    try:
-        names = [m.id for m in runtime.provider.GetModels()]
-    except Exception:
-        msg = (
-            f"Brak połączenia z serwerem modeli ({endpoint}). "
-            "Uruchom Ollamę, aby wysyłać zapytania do modelu."
-        )
-        runtime.provider_warning = msg
-        return False, msg
+    check_reachable = probe or (lambda: _is_endpoint_reachable(endpoint))
 
-    if not names:
-        msg = f"Brak dostępnych modeli na serwerze ({endpoint})."
-        runtime.provider_warning = msg
-        return False, msg
+    def watch() -> None:
+        wait_time = interval
+        while not stop_event.wait(wait_time):
+            if not getattr(runtime, "provider_warning", None) and getattr(runtime.provider, "model", None):
+                return
+            if not check_reachable():
+                wait_time = interval
+                continue
+            ok, _ = _ensure_cli_provider_ready(
+                runtime,
+                agent,
+                provider_lock=provider_lock,
+                announce=False,
+            )
+            if ok:
+                msg = f"\033[32m[System] Połączono z serwerem modeli ({runtime.provider.model}).\033[0m"
+                if waiting_for_input.is_set():
+                    print(f"\r\033[K{msg}\n{_cli_prompt_text(False)}", end="", flush=True)
+                else:
+                    print(f"\n{msg}", flush=True)
+                return
+            wait_time = min(wait_time * 1.5, 10.0)
 
-    cfg = runtime.config
-    cfg_model = cfg.model if cfg is not None else ""
-    target = cfg_model or runtime.settings.get("ollama_model") or names[0]
-    try:
-        selected = runtime.provider.SetModel(target)
-    except Exception:
-        selected = False
-    if not selected:
-        msg = f"Model '{target}' nie jest dostępny na serwerze ({endpoint})."
-        runtime.provider_warning = msg
-        return False, msg
-
-    runtime.provider_warning = None
-    if hasattr(agent, "model") and not getattr(agent, "model", ""):
-        setattr(agent, "model", runtime.provider.model)
-    print(f"\033[32m[System] Połączono z serwerem modeli ({runtime.provider.model}).\033[0m")
-    return True, None
+    thread = threading.Thread(target=watch, name="cli-provider-watch", daemon=True)
+    thread.start()
+    return thread
 
 
 def run_cli(runtime: AppRuntime) -> int:
@@ -815,287 +888,308 @@ def run_cli(runtime: AppRuntime) -> int:
     show_thinking_live = False
     last_thinking = ""
     current_chat_id: str | None = None
+    provider_lock = threading.Lock()
+    watcher_stop = threading.Event()
+    waiting_for_input = threading.Event()
 
-    while True:
-        try:
-            # Claude-style prompt marker
-            user_input = input("\033[1;38;5;208m❯\033[0m ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n\033[2mKończenie sesji Jarvis CLI...\033[0m")
-            break
+    if provider_warning and sys.stdin.isatty():
+        _start_cli_provider_watcher(
+            runtime,
+            agent,
+            provider_lock,
+            watcher_stop,
+            waiting_for_input,
+        )
 
-        if not user_input:
-            continue
-
-        cmd = user_input.lower()
-        if cmd in ("exit", "quit", "/exit", "/quit"):
-            print("\033[2mDo widzenia!\033[0m")
-            break
-        if cmd == "/chats":
-            chats = runtime.chat_store.list()
-            if not chats:
-                print("\033[2m[Jarvis] Brak zapisanych rozmów.\033[0m\n")
-                continue
-            print("\n\033[2mZapisane rozmowy (użyj '/load <nr lub id>', aby wznowić):\033[0m")
-            for idx, chat in enumerate(chats, start=1):
-                active_tag = " \033[32m[AKTYWNY]\033[0m" if chat.get("id") == current_chat_id else ""
-                short_id = str(chat.get("id", ""))[:8]
-                updated = str(chat.get("updated_at", ""))[:19].replace("T", " ")
-                title = chat.get("title") or "Nowa rozmowa"
-                print(
-                    f"  \033[36m[{idx}]\033[0m {short_id}  \033[2m{updated}\033[0m  "
-                    f"{title}{active_tag}"
-                )
-            print()
-            continue
-        if cmd == "/load" or cmd.startswith("/load "):
-            parts = user_input.split(maxsplit=1)
-            selector = parts[1].strip() if len(parts) > 1 else ""
-            if not selector:
-                print("\033[33m[Jarvis] Użycie: /load <nr lub id> (zobacz /chats).\033[0m\n")
-                continue
-            chats = runtime.chat_store.list()
-            target_id, err_msg = _resolve_chat_id(chats, selector)
-            if not target_id:
-                print(f"\033[31m[Jarvis] {err_msg}\033[0m\n")
-                continue
+    try:
+        while True:
+            prompt = _cli_prompt_text(bool(getattr(runtime, "provider_warning", None)))
+            waiting_for_input.set()
             try:
-                chat = runtime.chat_store.get(target_id)
-            except KeyError:
-                print(f"\033[31m[Jarvis] Nie znaleziono czatu '{target_id}'.\033[0m\n")
+                # Claude-style prompt marker
+                user_input = input(prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n\033[2mKończenie sesji Jarvis CLI...\033[0m")
+                break
+            finally:
+                waiting_for_input.clear()
+
+            if not user_input:
                 continue
-            messages = chat.get("messages", [])
-            agent.load_history(messages)
-            current_chat_id = str(chat["id"])
-            _bind_cli_chat(agent, runtime, current_chat_id)
-            if runtime.interaction_broker is not None:
-                runtime.interaction_broker.clear_session_allows()
-            last_thinking = _extract_last_thinking(messages)
-            print(
-                f"\033[32m[Jarvis] Wczytano rozmowę '{chat.get('title')}' "
-                f"({current_chat_id[:8]}, {len(messages)} wiadomości).\033[0m"
-            )
-            for msg in messages[-4:]:
-                role_label = "Ty" if msg.get("role") == "user" else "Jarvis"
-                preview = _CLI_THINK_RE.sub("", msg.get("content", "") or "").strip()
-                preview = " ".join(preview.split())
-                if len(preview) > 100:
-                    preview = preview[:97].rstrip() + "..."
-                print(f"  \033[2m{role_label}: {preview or '(pusta)'}\033[0m")
-            print()
-            continue
-        if cmd == "/reset":
-            agent.reset()
-            current_chat_id = None
-            _bind_cli_chat(agent, runtime, None)
-            if runtime.interaction_broker is not None:
-                runtime.interaction_broker.clear_session_allows()
-            last_thinking = ""
-            print("\033[2m[Jarvis] Historia rozmowy wyczyszczona.\033[0m\n")
-            continue
-        if cmd == "/voice":
-            if not runtime.audio_enabled:
-                print("\033[31m[System] Funkcje audio są wyłączone flagą --no-audio.\033[0m\n")
-                continue
-            try:
-                runtime.stt.start()
-                input("\033[33m● Nagrywanie z mikrofonu... [Enter = stop]\033[0m")
-                user_input = runtime.stt.stop().strip()
-                print(f"\033[2mRozpoznano:\033[0m {user_input}")
-                if not user_input:
+
+            cmd = user_input.lower()
+            if cmd in ("exit", "quit", "/exit", "/quit"):
+                print("\033[2mDo widzenia!\033[0m")
+                break
+            if cmd == "/chats":
+                chats = runtime.chat_store.list()
+                if not chats:
+                    print("\033[2m[Jarvis] Brak zapisanych rozmów.\033[0m\n")
                     continue
-            except Exception as exc:
-                Logger.printError(f"STT: {exc}")
-                continue
-        if cmd.startswith("/devices"):
-            try:
-                import sounddevice as sd
-
-                parts = cmd.split()
-                stt_handle = getattr(runtime.stt, "handle", None)
-
-                if len(parts) > 1 and parts[1].isdigit():
-                    dev_id = int(parts[1])
-                    if stt_handle is not None and hasattr(stt_handle, "input_device"):
-                        setattr(stt_handle, "input_device", dev_id)
-                        print(f"\033[32m[STT] Ustawiono urządzenie wejściowe audio na ID {dev_id}.\033[0m\n")
-                    else:
-                        print("\033[33m[STT] Aktywny adapter audio nie obsługuje zmiany urządzenia.\033[0m\n")
-                    continue
-
-                devices = sd.query_devices()
-                curr_dev = getattr(stt_handle, "input_device", None) if stt_handle is not None else None
-                default_in = curr_dev if curr_dev is not None else sd.default.device[0]
-                print("\n\033[2mDostępne mikrofony (wpisz '/devices <id>', aby zmienić):\033[0m")
-                found = False
-                for idx, dev in enumerate(devices):
-                    if dev.get("max_input_channels", 0) > 0:
-                        is_def = " \033[32m[AKTYWNY]\033[0m" if idx == default_in else ""
-                        print(f"  \033[36m[{idx}]\033[0m {dev.get('name')}{is_def}")
-                        found = True
-                if not found:
-                    print("  \033[31mNie wykryto żadnego mikrofonu w systemie.\033[0m")
+                print("\n\033[2mZapisane rozmowy (użyj '/load <nr lub id>', aby wznowić):\033[0m")
+                for idx, chat in enumerate(chats, start=1):
+                    active_tag = " \033[32m[AKTYWNY]\033[0m" if chat.get("id") == current_chat_id else ""
+                    short_id = str(chat.get("id", ""))[:8]
+                    updated = str(chat.get("updated_at", ""))[:19].replace("T", " ")
+                    title = chat.get("title") or "Nowa rozmowa"
+                    print(
+                        f"  \033[36m[{idx}]\033[0m {short_id}  \033[2m{updated}\033[0m  "
+                        f"{title}{active_tag}"
+                    )
                 print()
-            except Exception as exc:
-                print(f"\033[31mBłąd odczytu urządzeń audio: {exc}\033[0m\n")
-            continue
-
-        if cmd.startswith("/tts"):
-            if not runtime.audio_enabled:
-                print("\033[31m[System] Funkcje audio są wyłączone flagą --no-audio.\033[0m\n")
                 continue
-            parts = user_input.split(maxsplit=1)
-            arg = parts[1].strip() if len(parts) > 1 else ""
-
-            if arg.lower() in ("test", "demo"):
-                test_text = "Cześć! Synteza mowy Piper działa poprawnie."
-                if _cli_speak(
-                    runtime,
-                    test_text,
-                    f"[TTS] Testowanie syntezy mowy: '{test_text}'... (Ctrl+C aby przerwać)",
-                ):
-                    print("\033[32m[TTS] Odtwarzanie zakończone pomyślnie.\033[0m\n")
-                continue
-
-            if arg and arg.lower() not in ("on", "off"):
-                if _cli_speak(
-                    runtime,
-                    arg,
-                    f"[TTS] Odtwarzanie tekstu: '{arg}'... (Ctrl+C aby przerwać)",
-                ):
-                    print("\033[32m[TTS] Odtwarzanie zakończone.\033[0m\n")
-                continue
-
-            current_tts = bool(runtime.settings.get("tts_enabled", False))
-            if arg.lower() == "on":
-                new_tts = True
-            elif arg.lower() == "off":
-                new_tts = False
-            else:
-                new_tts = not current_tts
-
-            runtime.settings_store.update({"tts_enabled": new_tts})
-            state_str = "\033[32mWŁĄCZONA\033[0m" if new_tts else "\033[31mWYŁĄCZONA\033[0m"
-            print(f"[Jarvis] Automatyczna synteza mowy (TTS): {state_str}.\n")
-            continue
-
-        if cmd == "/think":
-            if last_thinking:
-                _render_thinking_block(last_thinking)
-            else:
-                print("\033[2m[Jarvis] Ostatnia odpowiedź nie zawierała procesu myślenia.\033[0m\n")
-            continue
-
-        if cmd == "/think live":
-            show_thinking_live = not show_thinking_live
-            state = "WŁĄCZONY" if show_thinking_live else "WYŁĄCZONY"
-            print(f"\033[2m[Jarvis] Podgląd myślenia na żywo: {state}.\033[0m\n")
-            continue
-        if cmd == "/logs":
-            Logger.VERBOSE = 3 if Logger.VERBOSE < 3 else 1
-            state = "WŁĄCZONE" if Logger.VERBOSE == 3 else "WYŁĄCZONE"
-            print(f"\033[2m[Jarvis] Logi diagnostyczne: {state}.\033[0m\n")
-            continue
-
-        ready, ready_msg = _ensure_cli_provider_ready(runtime, agent)
-        if not ready:
-            print(f"\033[33m[System] {ready_msg}\033[0m")
-            print("\033[2mDostępne w trybie offline: /chats, /load <id>, /tts, /devices, /logs, /reset, exit.\033[0m\n")
-            continue
-
-        if current_chat_id is None:
-            current_chat_id = str(runtime.chat_store.create()["id"])
-            _cleanup_cli_chats(runtime)
-            _bind_cli_chat(agent, runtime, current_chat_id)
-        runtime.chat_store.append(current_chat_id, "user", user_input)
-
-        thinking_parts: list[str] = []
-        reply_parts: list[str] = []
-        in_thinking = False
-        header_printed = False
-        interrupted = False
-
-        try:
-            for event in agent.stream(user_input):
-                if event["type"] == "thinking":
-                    text = event["text"]
-                    thinking_parts.append(text)
-                    if show_thinking_live:
-                        if not in_thinking:
-                            print("\n\033[35m[Thinking]\033[0m ", end="", flush=True)
-                            in_thinking = True
-                        print(text, end="", flush=True)
-                    elif not in_thinking:
-                        print("\r\033[2mJarvis myśli...\033[0m", end="", flush=True)
-                        in_thinking = True
-
-                elif event["type"] == "token":
-                    if in_thinking:
-                        if show_thinking_live:
-                            print("\n")
-                        else:
-                            print("\r" + " " * 30 + "\r", end="", flush=True)
-                        in_thinking = False
-                    if not header_printed:
-                        header_printed = True
-                    token_text = event["text"]
-                    reply_parts.append(token_text)
-                    print(token_text, end="", flush=True)
-
-                elif event["type"] == "approval_required":
-                    _cli_approval(runtime, event)
-                elif event["type"] == "user_input_required":
-                    _cli_question(runtime, event)
-                elif event["type"] in ("approval_pending", "question_pending"):
+            if cmd == "/load" or cmd.startswith("/load "):
+                parts = user_input.split(maxsplit=1)
+                selector = parts[1].strip() if len(parts) > 1 else ""
+                if not selector:
+                    print("\033[33m[Jarvis] Użycie: /load <nr lub id> (zobacz /chats).\033[0m\n")
                     continue
-                elif event["type"] == "warning":
-                    Logger.printWarning(event["message"])
-                elif event["type"] == "answer_reset":
-                    reply_parts.clear()
-                    thinking_parts.clear()
-                    header_printed = False
-                    in_thinking = False
-                    print("\n\033[33m[Retry]\033[0m Model opisał wywołanie narzędzia w treści — ponawiam z tool_calls.")
-                elif event["type"] == "tool_start":
-                    print(f"\n\033[2m[tool] {_cli_tool_summary(event)}\033[0m")
-                elif event["type"] == "tool_result":
-                    status = event.get("status", "ok")
-                    color = "\033[32m" if status == "ok" else "\033[31m"
-                    print(f"\033[2m[tool] {event.get('tool')}: {color}{status}\033[0m")
-                elif event["type"] == "error":
-                    if in_thinking:
-                        print("\r" + " " * 30 + "\r", end="", flush=True)
-                        in_thinking = False
+                chats = runtime.chat_store.list()
+                target_id, err_msg = _resolve_chat_id(chats, selector)
+                if not target_id:
+                    print(f"\033[31m[Jarvis] {err_msg}\033[0m\n")
+                    continue
+                try:
+                    chat = runtime.chat_store.get(target_id)
+                except KeyError:
+                    print(f"\033[31m[Jarvis] Nie znaleziono czatu '{target_id}'.\033[0m\n")
+                    continue
+                messages = chat.get("messages", [])
+                agent.load_history(messages)
+                current_chat_id = str(chat["id"])
+                _bind_cli_chat(agent, runtime, current_chat_id)
+                if runtime.interaction_broker is not None:
+                    runtime.interaction_broker.clear_session_allows()
+                last_thinking = _extract_last_thinking(messages)
+                print(
+                    f"\033[32m[Jarvis] Wczytano rozmowę '{chat.get('title')}' "
+                    f"({current_chat_id[:8]}, {len(messages)} wiadomości).\033[0m"
+                )
+                for msg in messages[-4:]:
+                    role_label = "Ty" if msg.get("role") == "user" else "Jarvis"
+                    preview = _CLI_THINK_RE.sub("", msg.get("content", "") or "").strip()
+                    preview = " ".join(preview.split())
+                    if len(preview) > 100:
+                        preview = preview[:97].rstrip() + "..."
+                    print(f"  \033[2m{role_label}: {preview or '(pusta)'}\033[0m")
+                print()
+                continue
+            if cmd == "/reset":
+                agent.reset()
+                current_chat_id = None
+                _bind_cli_chat(agent, runtime, None)
+                if runtime.interaction_broker is not None:
+                    runtime.interaction_broker.clear_session_allows()
+                last_thinking = ""
+                print("\033[2m[Jarvis] Historia rozmowy wyczyszczona.\033[0m\n")
+                continue
+            if cmd == "/voice":
+                if not runtime.audio_enabled:
+                    print("\033[31m[System] Funkcje audio są wyłączone flagą --no-audio.\033[0m\n")
+                    continue
+                try:
+                    runtime.stt.start()
+                    input("\033[33m● Nagrywanie z mikrofonu... [Enter = stop]\033[0m")
+                    user_input = runtime.stt.stop().strip()
+                    print(f"\033[2mRozpoznano:\033[0m {user_input}")
+                    if not user_input:
+                        continue
+                except Exception as exc:
+                    Logger.printError(f"STT: {exc}")
+                    continue
+            if cmd.startswith("/devices"):
+                try:
+                    import sounddevice as sd
+
+                    parts = cmd.split()
+                    stt_handle = getattr(runtime.stt, "handle", None)
+
+                    if len(parts) > 1 and parts[1].isdigit():
+                        dev_id = int(parts[1])
+                        if stt_handle is not None and hasattr(stt_handle, "input_device"):
+                            setattr(stt_handle, "input_device", dev_id)
+                            print(f"\033[32m[STT] Ustawiono urządzenie wejściowe audio na ID {dev_id}.\033[0m\n")
+                        else:
+                            print("\033[33m[STT] Aktywny adapter audio nie obsługuje zmiany urządzenia.\033[0m\n")
+                        continue
+
+                    devices = sd.query_devices()
+                    curr_dev = getattr(stt_handle, "input_device", None) if stt_handle is not None else None
+                    default_in = curr_dev if curr_dev is not None else sd.default.device[0]
+                    print("\n\033[2mDostępne mikrofony (wpisz '/devices <id>', aby zmienić):\033[0m")
+                    found = False
+                    for idx, dev in enumerate(devices):
+                        if dev.get("max_input_channels", 0) > 0:
+                            is_def = " \033[32m[AKTYWNY]\033[0m" if idx == default_in else ""
+                            print(f"  \033[36m[{idx}]\033[0m {dev.get('name')}{is_def}")
+                            found = True
+                    if not found:
+                        print("  \033[31mNie wykryto żadnego mikrofonu w systemie.\033[0m")
                     print()
-                    Logger.printError(event["message"])
-        except KeyboardInterrupt:
-            interrupted = True
-            flow = getattr(agent, "flow", None)
-            broker = getattr(runtime, "interaction_broker", None)
-            if broker is not None and flow is not None and getattr(flow, "run_id", None):
-                broker.cancel_run(flow.run_id)
-            print("\n\033[33m[Jarvis] Generowanie przerwane.\033[0m")
+                except Exception as exc:
+                    print(f"\033[31mBłąd odczytu urządzeń audio: {exc}\033[0m\n")
+                continue
 
-        if in_thinking and not header_printed:
-            print("\r" + " " * 30 + "\r\033[2m(brak odpowiedzi)\033[0m", end="", flush=True)
+            if cmd.startswith("/tts"):
+                if not runtime.audio_enabled:
+                    print("\033[31m[System] Funkcje audio są wyłączone flagą --no-audio.\033[0m\n")
+                    continue
+                parts = user_input.split(maxsplit=1)
+                arg = parts[1].strip() if len(parts) > 1 else ""
 
-        last_thinking = "".join(thinking_parts).strip()
-        if last_thinking and not show_thinking_live:
-            print("\n\033[2m  (wpisz /think, aby zobaczyć proces myślenia)\033[0m\n")
-        else:
-            print("\n")
+                if arg.lower() in ("test", "demo"):
+                    test_text = "Cześć! Synteza mowy Piper działa poprawnie."
+                    if _cli_speak(
+                        runtime,
+                        test_text,
+                        f"[TTS] Testowanie syntezy mowy: '{test_text}'... (Ctrl+C aby przerwać)",
+                    ):
+                        print("\033[32m[TTS] Odtwarzanie zakończone pomyślnie.\033[0m\n")
+                    continue
 
-        full_reply = "".join(reply_parts).strip()
-        stored_reply = "".join(reply_parts)
-        if last_thinking and "<think>" not in stored_reply:
-            stored_reply = f"<think>{''.join(thinking_parts)}</think>\n{stored_reply}"
-        if interrupted:
-            stored_reply = f"{stored_reply}\n<stopped/>".strip()
-        if stored_reply or interrupted:
-            runtime.chat_store.append(current_chat_id, "assistant", stored_reply)
+                if arg and arg.lower() not in ("on", "off"):
+                    if _cli_speak(
+                        runtime,
+                        arg,
+                        f"[TTS] Odtwarzanie tekstu: '{arg}'... (Ctrl+C aby przerwać)",
+                    ):
+                        print("\033[32m[TTS] Odtwarzanie zakończone.\033[0m\n")
+                    continue
 
-        if full_reply and not interrupted and runtime.audio_enabled and runtime.settings.get("tts_enabled"):
-            _cli_speak(runtime, full_reply)
+                current_tts = bool(runtime.settings.get("tts_enabled", False))
+                if arg.lower() == "on":
+                    new_tts = True
+                elif arg.lower() == "off":
+                    new_tts = False
+                else:
+                    new_tts = not current_tts
+
+                runtime.settings_store.update({"tts_enabled": new_tts})
+                state_str = "\033[32mWŁĄCZONA\033[0m" if new_tts else "\033[31mWYŁĄCZONA\033[0m"
+                print(f"[Jarvis] Automatyczna synteza mowy (TTS): {state_str}.\n")
+                continue
+
+            if cmd == "/think":
+                if last_thinking:
+                    _render_thinking_block(last_thinking)
+                else:
+                    print("\033[2m[Jarvis] Ostatnia odpowiedź nie zawierała procesu myślenia.\033[0m\n")
+                continue
+
+            if cmd == "/think live":
+                show_thinking_live = not show_thinking_live
+                state = "WŁĄCZONY" if show_thinking_live else "WYŁĄCZONY"
+                print(f"\033[2m[Jarvis] Podgląd myślenia na żywo: {state}.\033[0m\n")
+                continue
+            if cmd == "/logs":
+                Logger.VERBOSE = 3 if Logger.VERBOSE < 3 else 1
+                state = "WŁĄCZONE" if Logger.VERBOSE == 3 else "WYŁĄCZONE"
+                print(f"\033[2m[Jarvis] Logi diagnostyczne: {state}.\033[0m\n")
+                continue
+
+            ready, ready_msg = _ensure_cli_provider_ready(
+                runtime, agent, provider_lock=provider_lock
+            )
+            if not ready:
+                print(f"\033[33m[System] {ready_msg}\033[0m")
+                print("\033[2mDostępne w trybie offline: /chats, /load <id>, /tts, /devices, /logs, /reset, exit.\033[0m\n")
+                continue
+
+            if current_chat_id is None:
+                current_chat_id = str(runtime.chat_store.create()["id"])
+                _cleanup_cli_chats(runtime)
+                _bind_cli_chat(agent, runtime, current_chat_id)
+            runtime.chat_store.append(current_chat_id, "user", user_input)
+
+            thinking_parts: list[str] = []
+            reply_parts: list[str] = []
+            in_thinking = False
+            header_printed = False
+            interrupted = False
+
+            try:
+                for event in agent.stream(user_input):
+                    if event["type"] == "thinking":
+                        text = event["text"]
+                        thinking_parts.append(text)
+                        if show_thinking_live:
+                            if not in_thinking:
+                                print("\n\033[35m[Thinking]\033[0m ", end="", flush=True)
+                                in_thinking = True
+                            print(text, end="", flush=True)
+                        elif not in_thinking:
+                            print("\r\033[2mJarvis myśli...\033[0m", end="", flush=True)
+                            in_thinking = True
+
+                    elif event["type"] == "token":
+                        if in_thinking:
+                            if show_thinking_live:
+                                print("\n")
+                            else:
+                                print("\r" + " " * 30 + "\r", end="", flush=True)
+                            in_thinking = False
+                        if not header_printed:
+                            header_printed = True
+                        token_text = event["text"]
+                        reply_parts.append(token_text)
+                        print(token_text, end="", flush=True)
+
+                    elif event["type"] == "approval_required":
+                        _cli_approval(runtime, event)
+                    elif event["type"] == "user_input_required":
+                        _cli_question(runtime, event)
+                    elif event["type"] in ("approval_pending", "question_pending"):
+                        continue
+                    elif event["type"] == "warning":
+                        Logger.printWarning(event["message"])
+                    elif event["type"] == "answer_reset":
+                        reply_parts.clear()
+                        thinking_parts.clear()
+                        header_printed = False
+                        in_thinking = False
+                        print("\n\033[33m[Retry]\033[0m Model opisał wywołanie narzędzia w treści — ponawiam z tool_calls.")
+                    elif event["type"] == "tool_start":
+                        print(f"\n\033[2m[tool] {_cli_tool_summary(event)}\033[0m")
+                    elif event["type"] == "tool_result":
+                        status = event.get("status", "ok")
+                        color = "\033[32m" if status == "ok" else "\033[31m"
+                        print(f"\033[2m[tool] {event.get('tool')}: {color}{status}\033[0m")
+                    elif event["type"] == "error":
+                        if in_thinking:
+                            print("\r" + " " * 30 + "\r", end="", flush=True)
+                            in_thinking = False
+                        print()
+                        Logger.printError(event["message"])
+            except KeyboardInterrupt:
+                interrupted = True
+                flow = getattr(agent, "flow", None)
+                broker = getattr(runtime, "interaction_broker", None)
+                if broker is not None and flow is not None and getattr(flow, "run_id", None):
+                    broker.cancel_run(flow.run_id)
+                print("\n\033[33m[Jarvis] Generowanie przerwane.\033[0m")
+
+            if in_thinking and not header_printed:
+                print("\r" + " " * 30 + "\r\033[2m(brak odpowiedzi)\033[0m", end="", flush=True)
+
+            last_thinking = "".join(thinking_parts).strip()
+            if last_thinking and not show_thinking_live:
+                print("\n\033[2m  (wpisz /think, aby zobaczyć proces myślenia)\033[0m\n")
+            else:
+                print("\n")
+
+            full_reply = "".join(reply_parts).strip()
+            stored_reply = "".join(reply_parts)
+            if last_thinking and "<think>" not in stored_reply:
+                stored_reply = f"<think>{''.join(thinking_parts)}</think>\n{stored_reply}"
+            if interrupted:
+                stored_reply = f"{stored_reply}\n<stopped/>".strip()
+            if stored_reply or interrupted:
+                runtime.chat_store.append(current_chat_id, "assistant", stored_reply)
+
+            if full_reply and not interrupted and runtime.audio_enabled and runtime.settings.get("tts_enabled"):
+                _cli_speak(runtime, full_reply)
+    finally:
+        watcher_stop.set()
 
     return 0
 

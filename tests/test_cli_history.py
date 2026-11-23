@@ -363,3 +363,86 @@ def test_real_tts_and_tts_handle_wait_interrupt_cleanup() -> None:
     assert handle.wait(timeout=0.01) is False
     assert handle.wait(timeout=1.0) is True
     assert done.is_set()
+
+
+def test_cli_provider_watcher_auto_connects_in_background(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    online = False
+    get_models_calls = 0
+
+    class FlakyProvider:
+        def __init__(self) -> None:
+            self.model: str | None = None
+            self.base_url = "http://127.0.0.1:11434/v1"
+
+        def GetModels(self) -> list[Any]:
+            nonlocal get_models_calls
+            get_models_calls += 1
+            if not online:
+                raise ConnectionError("offline")
+            return [NS(id="qwen3.5:4b")]
+
+        def SetModel(self, name: str) -> bool:
+            self.model = name
+            return True
+
+    class ScriptedAgent(AgentBase):
+        def __init__(self) -> None:
+            self.model = ""
+
+        def reset(self) -> None:
+            pass
+
+        def load_history(self, messages: list[dict]) -> None:
+            pass
+
+        def stream(
+            self, user_text: str, attachments: list[Attachment] | None = None
+        ) -> Iterator[dict]:
+            yield {"type": "token", "text": "ok"}
+
+    agent = ScriptedAgent()
+    runtime = _make_runtime(
+        tmp_path,
+        provider=FlakyProvider(),
+        agent_factory=lambda _s: agent,
+        provider_warning="Brak połączenia z serwerem modeli (http://127.0.0.1:11434/v1).",
+    )
+    provider_lock = threading.Lock()
+    stop_event = threading.Event()
+    waiting_for_input = threading.Event()
+    waiting_for_input.set()
+    try:
+        thread = app_main._start_cli_provider_watcher(
+            runtime,
+            agent,
+            provider_lock,
+            stop_event,
+            waiting_for_input,
+            interval=0.02,
+            probe=lambda: online,
+        )
+        time.sleep(0.06)
+        assert get_models_calls == 0
+        assert runtime.provider_warning is not None
+
+        online = True
+        thread.join(timeout=1.5)
+        assert not thread.is_alive()
+        assert runtime.provider_warning is None
+        assert runtime.provider.model == "qwen3.5:4b"
+        assert agent.model == "qwen3.5:4b"
+
+        out = capsys.readouterr().out
+        assert "[System] Połączono z serwerem modeli (qwen3.5:4b)." in out
+        assert "❯" in out
+
+        ready, err = app_main._ensure_cli_provider_ready(
+            runtime, agent, provider_lock=provider_lock
+        )
+        assert (ready, err) == (True, None)
+        assert capsys.readouterr().out == ""
+    finally:
+        stop_event.set()
+        runtime.close()
