@@ -232,7 +232,43 @@
             font-size: 12px;
             transition: background 0.12s ease;
         }
-        .icon-btn:hover { background: var(--bg-hover); }
+        .icon-btn:hover:not(:disabled) { background: var(--bg-hover); }
+        .icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .export-menu {
+            position: relative;
+        }
+        .export-dropdown {
+            position: absolute;
+            top: calc(100% + 6px);
+            right: 0;
+            z-index: 25;
+            display: flex;
+            flex-direction: column;
+            min-width: 158px;
+            padding: 6px;
+            gap: 4px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            box-shadow: var(--shadow-lg);
+        }
+        .export-dropdown[hidden] { display: none; }
+        .export-option {
+            width: 100%;
+            text-align: left;
+            padding: 8px 10px;
+            background: transparent;
+            color: var(--text-primary);
+            border: none;
+            border-radius: 7px;
+            font-size: 12.5px;
+        }
+        .export-option:hover { background: var(--bg-hover); }
 
         #messages {
             display: flex;
@@ -1059,10 +1095,26 @@
     <main>
         <header>
             <h1 id="chat-title">Nowa rozmowa</h1>
-            <button class="icon-btn" id="theme-toggle" type="button" title="Przełącz motyw jasny/ciemny">
-                <i class="ph ph-sun" id="theme-icon"></i>
-                <span id="theme-label">Tryb jasny</span>
-            </button>
+            <div class="header-actions">
+                <div class="export-menu" id="export-menu">
+                    <button class="icon-btn" id="export-toggle" type="button" disabled
+                        aria-haspopup="menu" aria-expanded="false"
+                        title="Wybierz zapisaną rozmowę, aby ją wyeksportować">
+                        <i class="ph ph-download-simple"></i>
+                        <span>Eksportuj</span>
+                    </button>
+                    <div class="export-dropdown" id="export-dropdown" role="menu" hidden>
+                        <button class="export-option" id="export-md" type="button" role="menuitem"
+                            data-export-format="md">Markdown (.md)</button>
+                        <button class="export-option" id="export-txt" type="button" role="menuitem"
+                            data-export-format="txt">Tekst (.txt)</button>
+                    </div>
+                </div>
+                <button class="icon-btn" id="theme-toggle" type="button" title="Przełącz motyw jasny/ciemny">
+                    <i class="ph ph-sun" id="theme-icon"></i>
+                    <span id="theme-label">Tryb jasny</span>
+                </button>
+            </div>
         </header>
 
         <section id="messages" aria-live="polite"></section>
@@ -1237,6 +1289,9 @@
         const showHistory = $("show-history");
         const historySection = $("history-section");
         const themeSelect = $("theme-select");
+        const exportMenu = $("export-menu");
+        const exportToggle = $("export-toggle");
+        const exportDropdown = $("export-dropdown");
         const NEW_CHAT_TITLE = "Nowa rozmowa";
         let mermaidBlockCounter = 0;
         let mermaidRenderCounter = 0;
@@ -2267,7 +2322,130 @@
             renderHistory();
             const active = chats.find((chat) => chat.id === activeChatId);
             if (active) setTitle(active.title);
+            updateExportState();
         }
+
+        function closeExportMenu() {
+            exportDropdown.hidden = true;
+            exportToggle.setAttribute("aria-expanded", "false");
+        }
+
+        function updateExportState() {
+            const canExport = Boolean(activeChatId) && !streaming;
+            exportToggle.disabled = !canExport;
+            exportToggle.title = canExport
+                ? "Eksportuj aktywną rozmowę (Markdown lub TXT)"
+                : "Wybierz zapisaną rozmowę, aby ją wyeksportować";
+            if (!canExport) closeExportMenu();
+        }
+
+        function parseDownloadFilename(headerValue, fallbackFormat) {
+            if (headerValue) {
+                const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(headerValue);
+                if (utf8Match) {
+                    try {
+                        return decodeURIComponent(utf8Match[1].trim());
+                    } catch (error) {}
+                }
+                const plainMatch = /filename="?([^";]+)"?/i.exec(headerValue);
+                if (plainMatch) return plainMatch[1].trim();
+            }
+            return `rozmowa.${fallbackFormat}`;
+        }
+
+        async function exportActiveChat(format) {
+            if (!activeChatId || streaming) return;
+            closeExportMenu();
+            try {
+                const response = await fetch(
+                    `/api/chats/${encodeURIComponent(activeChatId)}/export?format=${encodeURIComponent(format)}`
+                );
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    throw new Error(data.error || `Błąd eksportu (${response.status})`);
+                }
+                const filename = parseDownloadFilename(
+                    response.headers.get("Content-Disposition"),
+                    format
+                );
+                const text = await response.text();
+                const isTxt = format === "txt";
+
+                if (window.pywebview?.api?.save_export_file) {
+                    const result = await window.pywebview.api.save_export_file(filename, text, format);
+                    if (result?.cancelled) {
+                        micStatus.textContent = "Anulowano zapis eksportu.";
+                        return;
+                    }
+                    if (!result?.saved) {
+                        throw new Error(result?.error || "Nie udało się zapisać pliku.");
+                    }
+                    micStatus.textContent = `Zapisano eksport: ${result.path || filename}`;
+                    return;
+                }
+
+                if (typeof window.showSaveFilePicker === "function") {
+                    try {
+                        const handle = await window.showSaveFilePicker({
+                            suggestedName: filename,
+                            types: [{
+                                description: isTxt ? "Pliki tekstowe" : "Pliki Markdown",
+                                accept: isTxt ? { "text/plain": [".txt"] } : { "text/markdown": [".md"] },
+                            }],
+                        });
+                        const writable = await handle.createWritable();
+                        await writable.write(new Blob([text], {
+                            type: isTxt ? "text/plain;charset=utf-8" : "text/markdown;charset=utf-8",
+                        }));
+                        await writable.close();
+                        micStatus.textContent = `Zapisano eksport: ${handle.name || filename}`;
+                        return;
+                    } catch (pickerError) {
+                        if (pickerError?.name === "AbortError") {
+                            micStatus.textContent = "Anulowano zapis eksportu.";
+                            return;
+                        }
+                    }
+                }
+
+                const blob = new Blob([text], {
+                    type: isTxt ? "text/plain;charset=utf-8" : "text/markdown;charset=utf-8",
+                });
+                const objectUrl = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = objectUrl;
+                link.download = filename;
+                document.body.append(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+                micStatus.textContent = `Pobrano eksport (${filename}).`;
+            } catch (error) {
+                micStatus.textContent = `Błąd eksportu: ${error.message}`;
+            }
+        }
+
+        exportToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (exportToggle.disabled) return;
+            const willOpen = exportDropdown.hidden;
+            exportDropdown.hidden = !willOpen;
+            exportToggle.setAttribute("aria-expanded", String(willOpen));
+        });
+
+        ["export-md", "export-txt"].forEach((id) => {
+            $(id).addEventListener("click", () => {
+                exportActiveChat($(id).dataset.exportFormat);
+            });
+        });
+
+        document.addEventListener("click", (event) => {
+            if (!exportMenu.contains(event.target)) closeExportMenu();
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") closeExportMenu();
+        });
 
         async function openChat(id) {
             if (streaming) return;
@@ -2285,6 +2463,7 @@ chat.messages.forEach(({ role, content, attachments = [], tools = [] }) => rende
                 if (!chat.messages.length) renderEmpty();
                 setTitle(chat.title);
                 renderHistory();
+                updateExportState();
                 chatNav.click();
             } catch (error) {
                 await refreshChats();
@@ -2299,6 +2478,7 @@ chat.messages.forEach(({ role, content, attachments = [], tools = [] }) => rende
             renderEmpty();
             setTitle(NEW_CHAT_TITLE);
             renderHistory();
+            updateExportState();
             resetMic();
             chatNav.click();
         }
@@ -2360,6 +2540,7 @@ chat.messages.forEach(({ role, content, attachments = [], tools = [] }) => rende
             sendButton.classList.toggle("stop", value);
             sendIcon.className = value ? "ph-fill ph-stop" : "ph ph-paper-plane-tilt";
             sendButton.setAttribute("aria-label", value ? "Zatrzymaj odpowiedź" : "Wyślij wiadomość");
+            updateExportState();
         }
 
         async function stopVoice() {
@@ -2516,6 +2697,7 @@ chat.messages.forEach(({ role, content, attachments = [], tools = [] }) => rende
                 const handle = (event) => {
                     if (event.type === "chat_id") {
                         activeChatId = event.id;
+                        updateExportState();
                         refreshChats();
                     } else if (event.type === "thinking") {
                         streamThinking += event.text;
@@ -2920,6 +3102,7 @@ chat.messages.forEach(({ role, content, attachments = [], tools = [] }) => rende
 
         async function init() {
             renderEmpty();
+            updateExportState();
             try {
                 settings = await api("/api/settings");
                 fillSettingsForm();

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 import asyncio
 import json
 import re
@@ -8,6 +8,7 @@ import sys
 import threading
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -316,6 +317,33 @@ def get_chat(chat_id: str, request: Request = None):
         return store.get(chat_id)
     except KeyError:
         return error("Nie znaleziono czatu.", 404)
+
+
+@router.get("/api/chats/{chat_id}/export")
+def export_chat(chat_id: str, format: str = "md", request: Request = None):
+    state = _state(request)
+    store = state.store
+    attachment_store = state.attachment_store
+    try:
+        exported = store.export_chat(
+            chat_id, format, attachment_store=attachment_store
+        )
+    except ValueError as exc:
+        return error(str(exc), 400, "invalid_format")
+    except KeyError:
+        return error("Nie znaleziono czatu.", 404)
+    return Response(
+        content=exported.content.encode("utf-8"),
+        media_type=exported.media_type,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{exported.filename}"; '
+                f"filename*=UTF-8''{quote(exported.filename)}"
+            ),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.delete("/api/chats/{chat_id}")
@@ -893,6 +921,43 @@ def create_app(*, runtime=None, runtime_factory=None):
     application.include_router(router)
     return application
 
+class _DesktopGuiApi:
+    def __init__(self) -> None:
+        self._window: Any = None
+
+    def save_export_file(self, filename: str, content: str, fmt: str = "md") -> dict:
+        if self._window is None:
+            return {"saved": False, "error": "Okno aplikacji nie jest gotowe."}
+        import webview
+
+        dialog_type = (
+            webview.FileDialog.SAVE
+            if hasattr(webview, "FileDialog")
+            else webview.SAVE_DIALOG
+        )
+        norm_fmt = (fmt or "").strip().lower()
+        if norm_fmt == "txt":
+            file_types = ("Pliki tekstowe (*.txt)", "Wszystkie pliki (*.*)")
+        else:
+            file_types = ("Pliki Markdown (*.md)", "Wszystkie pliki (*.*)")
+        selected = self._window.create_file_dialog(
+            dialog_type,
+            save_filename=filename,
+            file_types=file_types,
+        )
+        if not selected:
+            return {"saved": False, "cancelled": True}
+        target_raw = selected[0] if isinstance(selected, (list, tuple)) else selected
+        if not target_raw:
+            return {"saved": False, "cancelled": True}
+        target = Path(str(target_raw))
+        try:
+            target.write_text(str(content), encoding="utf-8")
+        except OSError as exc:
+            return {"saved": False, "error": str(exc)}
+        return {"saved": True, "path": str(target)}
+
+
 def start_gui(
     *,
     runtime=None,
@@ -930,8 +995,17 @@ def start_gui(
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:
-        webview.create_window('Jarvis', f'http://{host}:{port}', width=1000,
-                              height=720, min_size=(650, 500), text_select=True)
+        desktop_api = _DesktopGuiApi()
+        window = webview.create_window(
+            'Jarvis',
+            f'http://{host}:{port}',
+            width=1000,
+            height=720,
+            min_size=(650, 500),
+            text_select=True,
+            js_api=desktop_api,
+        )
+        desktop_api._window = window
         webview.start()
     finally:
         server.should_exit = True
