@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from handlers.ToolHandle import ToolHandle
 from tools.CodeTools import (
     ISOLATION_WARNING,
+    MAX_REGISTERED_TIMEOUT,
     configure_code_tools,
     edit_file,
     register_code_tools,
@@ -236,6 +238,93 @@ class CodeToolsTests(unittest.TestCase):
         self.assertIn("hello sandbox", approved["stdout"])
         self.assertEqual(seen_codes, ["print('hello sandbox')"])
         self.assertEqual(approved["isolation_warning"], ISOLATION_WARNING)
+
+    def test_run_python_runs_after_registry_grants_permission(self) -> None:
+        """Zgoda wydana przez rejestr musi wystarczyć - narzędzie nie pyta drugi raz.
+
+        Host (GUI/CLI/API) nie podaje approval_callback ani allow_execution, więc
+        konsentis pochodzi wyłącznie z polityki allow/ask/deny. execute_prepared to
+        moment, w którym AgentFlow ma już zgodę użytkownika - kod musi się wtedy
+        faktycznie uruchomić, a nie dostać "Permission denied".
+        """
+        handle = ToolHandle()
+        register_code_tools(handle, workspace_dir=self.workspace)
+
+        # Domyślna polityka dla write+destructive: ask -> execute_tool nie wykonuje.
+        unapproved = json.loads(
+            handle.execute_tool("run_python", {"code": "print('no')"})
+        )
+        self.assertFalse(unapproved["success"])
+        self.assertEqual(unapproved["result"]["code"], "approval_required")
+
+        prepared = handle.prepare_tool_call(
+            "run_python", {"code": "import os; print(os.getcwd())"}
+        )
+        self.assertTrue(prepared.requires_approval)
+        after_consent = json.loads(handle.execute_prepared(prepared))
+        self.assertTrue(after_consent["success"], after_consent.get("error"))
+        self.assertEqual(
+            after_consent["result"]["stdout"].strip(), str(self.workspace)
+        )
+
+    def test_registered_run_python_clamps_timeout_to_host_wait(self) -> None:
+        """Zarejestrowane wywołanie nie może czekać dłużej, niż AgentFlow.
+
+        AgentFlow abandons a tool worker after DEFAULT_TOOL_TIMEOUT (10 s) and the
+        result then loses stdout/stderr/exit code. run_python therefore cuts the
+        requested timeout to MAX_REGISTERED_TIMEOUT and reports the cut in the payload.
+        """
+        handle = ToolHandle()
+        register_code_tools(handle, workspace_dir=self.workspace)
+
+        prepared = handle.prepare_tool_call(
+            "run_python", {"code": "print('ok')", "timeout": 30}
+        )
+        payload = json.loads(handle.execute_prepared(prepared))
+        self.assertTrue(payload["success"], payload.get("error"))
+
+        result = payload["result"]
+        self.assertEqual(result["stdout"].strip(), "ok")
+        self.assertEqual(result["timeout_effective"], MAX_REGISTERED_TIMEOUT)
+        self.assertEqual(result["timeout_requested"], 30.0)
+        self.assertIn("host waits at most", result["timeout_note"])
+
+    def test_long_running_code_is_cut_before_the_agent_gives_up(self) -> None:
+        """Kod ponad limit kończy się czytelny timeout; podproces nie zostaje sam.
+
+        Przed fixem AgentFlow porzucał worker po 10 s (nieczytelny błąd, brak outputu),
+        a podproces działał dalej do własnego timeoutu. Teraz narzędzie samo skraca
+        limit, więc podproces kończy się w czasie, którego realnie oczekuje host.
+        """
+        handle = ToolHandle()
+        register_code_tools(handle, workspace_dir=self.workspace)
+        prepared = handle.prepare_tool_call(
+            "run_python",
+            {
+                "code": "import time\nprint('start')\ntime.sleep(12)\nprint('late')",
+                "timeout": 30,
+            },
+        )
+
+        started = time.monotonic()
+        payload = json.loads(handle.execute_prepared(prepared))
+        elapsed = time.monotonic() - started
+
+        self.assertFalse(payload["success"])
+        self.assertIn("timed out", str(payload.get("error", "")).lower())
+        # Musimy zwrócić wynik przed tym, jak AgentFlow porzuci worker (10 s).
+        self.assertLess(elapsed, 10.0)
+
+    def test_direct_run_python_is_not_clamped(self) -> None:
+        """Poza rejestrem timeout remains up to MAX_TIMEOUT - clamp is host-scoped."""
+        result = run_python(
+            "print(1)",
+            workspace_dir=self.workspace,
+            allow_execution=True,
+            timeout=20,
+        )
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertNotIn("timeout_effective", result)
 
     def test_run_python_executes_in_workspace_handles_errors_and_truncates_output(self) -> None:
         (self.workspace / "helper_mod.py").write_text("VALUE = 123\n", encoding="utf-8")

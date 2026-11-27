@@ -107,6 +107,31 @@ def use_tool_session(scope):
         _TOOL_SESSION.reset(token)
 
 
+# Zgoda wydana przez politykę rejestru (allow lub decyzję użytkownika po
+# zdarzeniu approval_required) musi być widoczna dla samego narzędzia, inaczej
+# run_python odmówiłby wykonania po tym, jak użytkownik już zezwolił. ContextVar
+# nie propaguje się do wątków executora, dlatego scope ustawia się wewnątrz
+# execute_prepared - to ten wątek faktycznie wykonuje funkcję narzędzia.
+_TOOL_AUTHORITY: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "tool_authority", default=None
+)
+
+
+def current_tool_authority() -> Optional[dict]:
+    """Zgoda hosta dla bieżącego wywołania: {'tool':..., 'policy':...} albo None."""
+    return _TOOL_AUTHORITY.get()
+
+
+@contextmanager
+def use_tool_authority(scope):
+    """Ustawia zgodę hosta w wątku narzędzia i sprząta po niej."""
+    token = _TOOL_AUTHORITY.set(dict(scope) if isinstance(scope, dict) else {})
+    try:
+        yield _TOOL_AUTHORITY.get()
+    finally:
+        _TOOL_AUTHORITY.reset(token)
+
+
 class ToolErrorText(str):
     """Tekst błędu dla narzędzi, których bezpośrednie API zwraca str."""
 
@@ -764,7 +789,14 @@ class ToolHandle:
                 function = self._functions.get(prepared.name)
             if function is None:
                 raise KeyError(f"No implementation for tool '{prepared.name}'.")
-            result = function(**prepared.arguments)
+            # Wywołanie przeszło walidację i politykę (opcjonalnie także zgoda
+            # użytkownika) - narzędzia mogą to sprawdzić przez
+            # handlers.ToolHandle.current_tool_authority().
+            with use_tool_authority({
+                "tool": prepared.name,
+                "policy": prepared.policy,
+            }):
+                result = function(**prepared.arguments)
             return self._format_result(result)
         except Exception as error:
             return json.dumps(
