@@ -14,16 +14,22 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 from core import Logger
-from handlers.ToolHandle import ToolHandle
+from handlers.ToolHandle import ToolHandle, current_tool_authority
 from tools.FileTools import write_file
 from tools.ToolUtils import handle_errors as _handle_errors, validate_syntax
 
 DEFAULT_TIMEOUT: float = 10.0
 MAX_TIMEOUT: float = 60.0
+# Host (core.AgentFlow.DEFAULT_TOOL_TIMEOUT) czeka na rezultat narzędzia tylko ~10 s.
+# Wywołanie dłuższe niż ten limit AgentFlow porzuca, tracąc stdout/stderr/exit code,
+# a podproces zostaje bez nadzoru. Zarejestrowane wywołania obcinamy więc do
+# MAX_REGISTERED_TIMEOUT; run_python() wywołane bezpośrednio może użyć MAX_TIMEOUT.
+MAX_REGISTERED_TIMEOUT: float = 9.0
 MAX_OUTPUT_CHARS: int = 10_000
 ISOLATION_WARNING: str = (
     "UWAGA: Uruchamianie kodu odbywa się w podprocesie z ograniczonym katalogiem "
@@ -230,6 +236,21 @@ def _subprocess_env() -> dict[str, str]:
     }
 
 
+def _phase_timeout(deadline: float) -> float | None:
+    """Zwraca sekundy pozostałe do deadline'u; None tylko gdy limit wyczerpany.
+
+    Dwufazowe uruchomianie (C/C++: najpierw kompilacja, potem run) dzieli JEDEN
+    limit czasowy, a nie podwaja go - inaczej wywołanie mogłoby trwać dwa razy
+    dłużej, niż AgentFlow oczekuje na rezultat.
+    """
+    # Próg tu celowo malutki: timeout 0.3 s musi dojść do podprocesu, żeby model
+    # dostał "Execution timed out after 0.3 seconds", a nie "limit exhausted".
+    remaining = deadline - time.monotonic()
+    if remaining <= 0.05:
+        return None
+    return round(remaining, 2)
+
+
 def _execute_subprocess(
     cmd: list[str], cwd: Path, timeout_val: float, max_output_chars: int
 ) -> dict[str, Any]:
@@ -247,7 +268,7 @@ def _execute_subprocess(
     except subprocess.TimeoutExpired as error:
         return _build_run_result(
             error.stdout, error.stderr,
-            error=f"Execution timed out after {timeout_val} seconds.",
+            error=f"Execution timed out after {timeout_val:g} seconds.",
             limit=max_output_chars,
         )
     except OSError as error:
@@ -266,6 +287,44 @@ def _execute_subprocess(
     return result
 
 
+def _execution_permission_error(
+    code: str,
+    *,
+    allow_execution: bool | None = None,
+    approval_callback: Callable[[str], bool] | None = None,
+) -> str | None:
+    """Zwraca tekst odmowy albo None, gdy wolno uruchomić kod.
+
+    Źródła konsentisu w kolejności:
+    1. ``current_tool_authority()`` - ToolHandle.execute_prepared wywołuje funkcję
+       dopiero po tym, jak polityka allow/ask/deny (lub zgoda użytkownika w GUI/CLI
+       po zdarzeniu approval_required) już wydała zgodę;
+    2. jawne ``allow_execution`` z rejestracji lub ``configure_code_tools``;
+    3. ``approval_callback`` - starszy mechanizm pytań po stronie hosta;
+    4. domyślna odmowa.
+
+    Rejestr narzędzi jest teraz źródłem tej decyzji: bez tego run_python odmawiałby
+    wykonania nawet wtedy, gdy użytkownik zezwolił w modalu zgody.
+    """
+    if current_tool_authority() is not None:
+        return None
+    allowed = _default_allow_execution if allow_execution is None else bool(allow_execution)
+    if allowed:
+        return None
+    cb = approval_callback if approval_callback is not None else _default_approval_callback
+    if cb is not None:
+        try:
+            approved = bool(cb(code))
+        except Exception as error:
+            return f"Approval check failed: {error}"
+        if not approved:
+            return "Permission denied: User rejected code execution."
+        return None
+    return (
+        "Permission denied: Explicit user approval is required before running code."
+    )
+
+
 def run_python(
     code: str,
     timeout: float = DEFAULT_TIMEOUT,
@@ -276,7 +335,14 @@ def run_python(
     approval_callback: Callable[[str], bool] | None = None,
     max_output_chars: int = MAX_OUTPUT_CHARS,
 ) -> dict[str, Any]:
-    """Uruchamia kod w wybranym języku (domyślnie Python) w podprocesie po uzyskaniu zgody użytkownika (nie jest to pełny sandbox)."""
+    """Uruchamia kod w podprocesie (domyślnie Python) po uzyskaniu zgody.
+
+    Zgoda pochodzi z polityki narzędzia w rejestrze (`ask` -> modal zgody w GUI albo
+    prompt w CLI; ToolHandle.execute_prepared woła funkcję dopiero po jej wydaniu),
+    a także z limitu czasu i limitu outputu. `allow_execution` oraz `approval_callback`
+    są fallbackiem dla wywołań poza rejestrem. Uruchamianie kodu NIE jest pełnym
+    sandboxem systemowym.
+    """
     Logger.printWarning(ISOLATION_WARNING)
 
     if not isinstance(code, str) or not code.strip():
@@ -297,22 +363,22 @@ def run_python(
     if isinstance(max_output_chars, bool) or not isinstance(max_output_chars, int) or max_output_chars <= 0:
         return _build_run_result(error="max_output_chars must be a positive integer.")
 
+    # C/C++ (kompilacja + run) dzieli jeden limit czasu, a nie podwaja go - AgentFlow
+    # czeka na rezultat narzędzia tylko ~10 s.
+    deadline = time.monotonic() + timeout_val
+
     try:
         workspace_root = _resolve_workspace_root(workspace_dir)
     except (FileNotFoundError, NotADirectoryError, PermissionError, OSError, ValueError, TypeError) as error:
         return _build_run_result(error=str(error))
 
-    cb = approval_callback if approval_callback is not None else _default_approval_callback
-    allowed = _default_allow_execution if allow_execution is None else allow_execution
-    if cb is not None:
-        try:
-            approved = bool(cb(code))
-        except Exception as error:
-            return _build_run_result(error=f"Approval check failed: {error}")
-        if not approved:
-            return _build_run_result(error="Permission denied: User rejected code execution.")
-    elif not allowed:
-        return _build_run_result(error="Permission denied: Explicit user approval is required before running code.")
+    permission_error = _execution_permission_error(
+        code,
+        allow_execution=allow_execution,
+        approval_callback=approval_callback,
+    )
+    if permission_error is not None:
+        return _build_run_result(error=permission_error)
 
     if compiled_spec is not None:
         compiler, suffix = compiled_spec
@@ -325,22 +391,40 @@ def run_python(
             src_path = tmp_path / f"snippet{suffix}"
             bin_path = tmp_path / ("snippet.exe" if sys.platform == "win32" else "snippet")
             src_path.write_text(code, encoding="utf-8")
+            compile_budget = _phase_timeout(deadline)
+            if compile_budget is None:
+                return _build_run_result(
+                    error=f"Time limit of {timeout_val}s was exhausted before compilation started."
+                )
             compile_res = _execute_subprocess(
                 [compiler, str(src_path), "-o", str(bin_path)],
                 workspace_root,
-                timeout_val,
+                compile_budget,
                 max_output_chars,
             )
             if not compile_res["success"]:
                 compile_res["error"] = f"Compilation failed: {compile_res.get('error', '')}".strip()
                 return compile_res
-            return _execute_subprocess([str(bin_path)], workspace_root, timeout_val, max_output_chars)
+            run_budget = _phase_timeout(deadline)
+            if run_budget is None:
+                return _build_run_result(
+                    error=(
+                        f"Compiled successfully, but the {timeout_val}s limit was used up "
+                        "by compilation, so the binary was never executed."
+                    )
+                )
+            return _execute_subprocess([str(bin_path)], workspace_root, run_budget, max_output_chars)
 
     assert runner is not None
     cmd = runner(code)
     if lang_key not in ("python", "py") and shutil.which(cmd[0]) is None:
         return _build_run_result(
             error=f"Interpreter '{cmd[0]}' for language '{language}' was not found in PATH."
+        )
+    # Jednofazowe uruchomienie (interpreter): run dostaje cały limit czasu.
+    if _phase_timeout(deadline) is None:
+        return _build_run_result(
+            error=f"Time limit of {timeout_val}s was exhausted before execution started."
         )
     return _execute_subprocess(cmd, workspace_root, timeout_val, max_output_chars)
 
@@ -355,8 +439,14 @@ def register_code_tools(
     workspace_dir: str | Path | None = None,
     allow_execution: bool = False,
     approval_callback: Callable[[str], bool] | None = None,
+    max_runtime: float = MAX_REGISTERED_TIMEOUT,
 ) -> None:
-    """Rejestruje narzędzia kodowania w ``ToolHandle`` z polityką kontrolowaną po stronie hosta."""
+    """Rejestruje narzędzia kodowania w ``ToolHandle`` z polityką po stronie hosta.
+
+    Zgoda na uruchomienie kodu pochodzi z polityki allow/ask/deny (domyślnie `ask` ->
+    modal zgody w GUI / prompt w CLI). `max_runtime` skraca timeout podprocesu do
+    czasu, którego realnie oczekuje agent (core.AgentFlow.DEFAULT_TOOL_TIMEOUT ~10 s).
+    """
 
     def _edit_file_tool(path: str, target: str = "", replacement: str = "") -> dict[str, Any]:
         return edit_file(path, target, replacement, workspace_dir=workspace_dir)
@@ -364,10 +454,28 @@ def register_code_tools(
     def _run_python_tool(
         code: str, timeout: float = DEFAULT_TIMEOUT, language: str = "python"
     ) -> dict[str, Any]:
-        return run_python(
-            code, timeout, workspace_dir,
+        # AgentFlow czeka na rezultat narzędzia ~10 s (DEFAULT_TOOL_TIMEOUT). Timeout
+        # dłuższy niż ten limit zostałby porzucony razem ze stdout/stderr/exit code,
+        # a podproces został by bez nadzoru - obcinamy go do max_runtime.
+        requested = (
+            float(timeout)
+            if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+            else DEFAULT_TIMEOUT
+        )
+        effective = min(max(requested, 0.1), float(max_runtime))
+        result = run_python(
+            code, effective, workspace_dir,
             language=language, allow_execution=allow_execution, approval_callback=approval_callback,
         )
+        if effective < requested - 0.01:
+            result["timeout_requested"] = requested
+            result["timeout_effective"] = effective
+            result["timeout_note"] = (
+                f"Requested {requested:g}s, but the host waits at most "
+                f"{max_runtime:g}s per tool call - execution was limited to "
+                f"{effective:g}s."
+            )
+        return result
 
     tool_handle.create_tool(
         name="edit_file",

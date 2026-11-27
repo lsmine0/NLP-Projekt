@@ -10,6 +10,7 @@ from core.AgentAdapter import OllamaAgent
 from core.AuditLog import AuditLog
 from core.Interactions import InteractionBroker
 from handlers.ToolHandle import ToolHandle
+from tools.CodeTools import register_code_tools
 from tools.InteractionTools import register_interaction_tools
 
 
@@ -141,6 +142,38 @@ def test_allow_once_executes_and_continues(tmp_path):
     assert any(event["type"] == "tool_result" and event["status"] == "ok" for event in events)
     assert calls and Path(calls[0]["path"]) == (tmp_path / "a.txt").resolve()
     assert "gotowe" in "".join(e["text"] for e in events if e["type"] == "token")
+
+
+def test_run_python_executes_after_allow_once(tmp_path):
+    """Regression test: po zezwoleniu użytkownika run_python musi się naprawdę uruchomić.
+
+    Host nie konfiguruje approval_callback ani allow_execution - zgoda płynie tylko
+    z polityki rejestru (ask -> approval_required -> allow_once).
+    """
+    tools = ToolHandle()
+    register_code_tools(tools, workspace_dir=tmp_path)
+    scripts = [
+        [delta(fragments=[fragment("c1", "run_python", {"code": "print('po zgody')"})])],
+        answer("Kod wykonany."),
+    ]
+    broker = InteractionBroker(timeout=5)
+    agent = make_agent(tmp_path, tools, scripts, broker)
+
+    events = []
+    for event in agent.stream("uruchom kod"):
+        events.append(event)
+        if event["type"] == "approval_required":
+            assert event["tool"] == "run_python"
+            assert broker.resolve_approval(event["id"], "allow_once").ok
+
+    tool_messages = [m for m in agent.flow.context if m.get("role") == "tool"]
+    payload = json.loads(tool_messages[-1]["content"])
+    assert payload["success"] is True, payload.get("error")
+    assert payload["result"]["stdout"].strip() == "po zgody"
+    assert any(
+        event["type"] == "tool_result" and event["status"] == "ok"
+        for event in events
+    )
 
 
 def test_denial_is_structured_and_agent_can_continue(tmp_path):
