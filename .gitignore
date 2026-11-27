@@ -235,3 +235,6 @@ __marimo__/
 
 # Local data files for chat history
 data/
+
+# Bundled frontend vendor libraries
+frontend/vendor/

@@ -1,0 +1,42 @@
+Przykładowa rozmowa — eksport historii
+ID rozmowy: 687edba523924de8ab8d135290741463
+Ostatnia aktualizacja: 2026-11-24T15:47:28.978825+00:00
+============================================================
+
+[Użytkownik]
+
+Załącznik: architektura_systemu.png (image/png, ID: f939a5dcb41547889edfe2e19cddc65f)
+
+Cześć! Narysuj prosty diagram i podaj funkcję w Pythonie z polskimi znakami.
+
+------------------------------------------------------------
+
+[Asystent]
+
+Oczywiście, oto funkcja i diagram:
+
+```python
+def powitaj(uzytkownik: str) -> str:
+    return f"Witaj, {uzytkownik}! (zażółć gęślą jaźń)"
+```
+
+```mermaid
+flowchart TD
+    Start[Wejście użytkownika] --> Walidacja{Poprawne?}
+    Walidacja -->|Tak| Eksport[Zapis TXT / MD]
+    Walidacja -->|Nie| Blad[Komunikat błędu]
+```
+
+------------------------------------------------------------
+
+[Użytkownik]
+
+Dodaj jeszcze podsumowanie.
+
+------------------------------------------------------------
+
+[Asystent]
+
+Podsumowanie zostało rozpoczęte
+
+[Odpowiedź została przerwana przez użytkownika]

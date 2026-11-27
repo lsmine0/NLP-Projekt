@@ -568,8 +568,14 @@ class TTSHandle:
         threads = list(self._threads)
         deadline = None if timeout is None else time.monotonic() + timeout
         for thread in threads:
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            thread.join(remaining)
+            while thread.is_alive():
+                if deadline is None:
+                    thread.join(0.1)
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    thread.join(min(0.1, remaining))
         return not any(thread.is_alive() for thread in threads)
 
     def close(self) -> None:
