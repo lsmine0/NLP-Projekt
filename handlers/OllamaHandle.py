@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Callable, Optional
 from openai import OpenAI
-from handlers.ToolHandle import ToolHandle
+from handlers.ToolHandle import ToolHandle, short_tool_description
 import handlers.ContextHandle as Contx
 import requests
 from core import Logger
@@ -250,10 +250,10 @@ class OllamaHandler:
 
     @staticmethod
     def _ShortDescription(value: Any, limit: int = 60) -> str:
-        text = " ".join(str(value or "").split())
-        if len(text) > limit:
-            return text[: limit - 1].rstrip() + "…"
-        return text
+        # Skracanie opisów narzędzi ma jedno źródło (handlers.ToolHandle):
+        # schema wysyłana modelowi, widok UI i meta-narzędzie list_tools skracają
+        # opisy identycznie, więc „krótki opis” znaczy wszędzie to samo.
+        return short_tool_description(value, limit)
 
     @classmethod
     def _CompactSchema(cls, schema: Any, depth: int = 0) -> dict[str, Any]:

@@ -12,6 +12,7 @@ def build_tools(
     code: bool = True,
     images: bool = True,
     interactions: bool = True,
+    meta: bool = True,
     workspace_dir=None,
     allowed_dirs: Iterable[str | Path] | None = None,
     policy_overrides: dict[str, str] | None = None,
@@ -23,6 +24,11 @@ def build_tools(
     ``workspace_dir`` is the primary directory used for relative paths. Every
     file tool is validated against ``workspace_dir`` plus optional
     ``allowed_dirs``; paths escaping those roots are denied before execution.
+
+    ``meta`` registers ``list_tools``, the introspection tool that lets the agent
+    discover its own registry (names, short descriptions and - on request - full
+    parameter details). It is infrastructure rather than a feature group, so it
+    stays on by default even when every other group is disabled.
     """
 
     roots: list[str | Path] = []
@@ -43,6 +49,12 @@ def build_tools(
         protected_paths=protected_paths,
     )
 
+    # Rejestr narzędzi = single source of truth; list_tools musi być zarejestrowany
+    # przed pozosta grupami, żeby był pierwszy w schemie i w logach.
+    if meta:
+        from tools.MetaTools import register_meta_tools
+
+        register_meta_tools(tool_handle)
     if files:
         from tools.FileTools import register_tools
 

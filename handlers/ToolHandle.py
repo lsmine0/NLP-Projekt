@@ -31,6 +31,67 @@ _TOOL_SESSION: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
 )
 
 
+# Jedno źródło skracania opisów narzędzi: schema wysyłana modelowi, widok UI
+# i meta-narzędzie list_tools korzystają z tego samego helpera. Wcześniej
+# PromptBuilder i OllamaHandle utrzymywali własne, rozbieżne kopie tej funkcji.
+SHORT_DESCRIPTION_LIMIT = 60
+# AgentFlow obcina wynik każdego narzędzia do DEFAULT_TOOL_CHARS (1024 znaków),
+# a TruncateJson nie umie złożyć urwanego JSONa. Meta-narzędzie list_tools
+# mieści się więc w tym limitu samo - patrz _fit_to_char_budget.
+INTROSPECTION_CHAR_BUDGET = 960
+
+
+def short_tool_description(value: Any, limit: int = SHORT_DESCRIPTION_LIMIT) -> str:
+    """Skróć opis narzędzia do jednej linii (max ``limit`` znaków)."""
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + "\u2026"
+    return text
+
+
+def _longest_string(obj: Any) -> tuple[Any, Any, int]:
+    """Znajdź najdłuższy string w payloadu: (container, key, długość)."""
+    best: list[Any] = [None, None, 0]
+
+    def walk(container: Any) -> None:
+        if isinstance(container, dict):
+            items = container.items()
+        elif isinstance(container, list):
+            items = list(enumerate(container))
+        else:
+            return
+        for key, value in items:
+            if isinstance(value, str):
+                if len(value) > best[2]:
+                    best[:] = [container, key, len(value)]
+            elif isinstance(value, (dict, list)):
+                walk(value)
+
+    walk(obj)
+    return best[0], best[1], best[2]
+
+
+def _fit_to_char_budget(payload: Dict[str, Any], budget: int) -> Dict[str, Any]:
+    """Skróć najdłuższe stringi, aż JSON payloadu mieści się w ``budget``.
+
+    Zawsze zwraca poprawny JSON: urwanego JSONa model nie umiałby przeczytać,
+    a AgentFlow docina rezultaty narzędzi hard-cutem z "[TRUNCATED]".
+    """
+    for _ in range(12):
+        serialized = len(json.dumps(payload, ensure_ascii=False))
+        if serialized <= budget:
+            break
+        container, key, length = _longest_string(payload)
+        if container is None or length <= 16:
+            break
+        keep = max(8, length - (serialized - budget) - 1)  # 1 znak na "…"
+        if keep >= length:
+            break
+        text = str(container[key])
+        container[key] = text[:keep].rstrip() + "\u2026"
+    return payload
+
+
 def current_tool_session() -> Optional[dict]:
     """Zakres bieżącej sesji: {'chat_id': ..., 'attachment_store': ...} albo None."""
     return _TOOL_SESSION.get()
@@ -329,6 +390,134 @@ class ToolHandle:
     def get_tools_dict(self) -> Dict[str, List[Dict[str, Any]]]:
         """Zwraca pełny słownik: {"tools": [ {...} ]}."""
         return {"tools": self.get_tools_list()}
+
+    # ------------------------------------------------------------------
+    # Introspekcja (meta-narzędzie list_tools, UI, testy)
+    # ------------------------------------------------------------------
+    def tool_names(self) -> List[str]:
+        """Nazwy zarejestrowanych narzędzi w kolejności rejestracji."""
+        with self._lock:
+            return list(self._tools)
+
+    def tool_summaries(self) -> List[Dict[str, str]]:
+        """Kompaktowa lista: [{'name': ..., 'description': <max 60 znaków>}].
+
+        To jedyny format, z którego ktokolwiek (prompt, schema, UI) buduje
+        „przegląd” narzędzi - model nie musi już dublować opisów w prompcie.
+        """
+        with self._lock:
+            items = [(name, self._tools[name]) for name in self._tools]
+        summaries: List[Dict[str, str]] = []
+        for name, schema in items:
+            description = (schema.get("function") or {}).get("description", "")
+            summaries.append(
+                {"name": name, "description": short_tool_description(description)}
+            )
+        return summaries
+
+    def describe_tool(self, name: str) -> Optional[Dict[str, Any]]:
+        """Zwraca unifikowany, pełny opis jednego narzędzia albo None."""
+        with self._lock:
+            schema = self._tools.get(name)
+            spec = self._specs.get(name)
+        if schema is None and spec is None:
+            return None
+        function = (schema or {}).get("function") or {}
+        record: Dict[str, Any] = (
+            spec.public(self.get_policy(name, spec))
+            if spec is not None
+            else {"name": name}
+        )
+        record["description"] = function.get("description") or record.get("description", "")
+        record["parameters"] = function.get("parameters") or {}
+        return record
+
+    @staticmethod
+    def _tool_view(record: Dict[str, Any]) -> Dict[str, Any]:
+        """Zwarty widok narzędzia dla list_tools: typy + opisy, bez szumu.
+
+        Raw JSON Schema potrafi zajmować więcej niż limit rezultatu narzędzia
+        (1024 znaków w AgentFlow), więc renderujemy tylko to, czego model
+        potrzebuje do wywołania: wymagane pola, typy i krótkie opisy.
+        """
+        parameters = record.get("parameters") or {}
+        properties: Dict[str, Dict[str, Any]] = {}
+        for param_name, schema in (parameters.get("properties") or {}).items():
+            if not isinstance(schema, dict):
+                continue
+            entry: Dict[str, Any] = {"type": schema.get("type", "string")}
+            items = schema.get("items")
+            if isinstance(items, dict) and items.get("type"):
+                entry["items"] = {"type": items["type"]}
+            allowed = schema.get("enum")
+            if isinstance(allowed, list) and len(json.dumps(allowed)) <= 60:
+                entry["enum"] = allowed
+            description = short_tool_description(schema.get("description", ""), 90)
+            if description:
+                entry["description"] = description
+            properties[str(param_name)] = entry
+
+        view: Dict[str, Any] = {
+            "name": record.get("name"),
+            "description": short_tool_description(record.get("description", ""), 180),
+            "required": [
+                item for item in (parameters.get("required") or []) if isinstance(item, str)
+            ],
+            "parameters": properties,
+            "risk": record.get("risk", []),
+            "policy": record.get("policy", "allow"),
+            "source": record.get("source", "builtin"),
+        }
+        if record.get("server"):
+            view["server"] = record["server"]
+        return view
+
+    def list_available_tools(self, tool_name: Optional[str] = None) -> Dict[str, Any]:
+        """Meta-narzędzie: agent sam zagląda do swojego rejestru narzędzi.
+
+        Bez argumentów zwraca listę nazw wszystkich dostępnych narzędzi (krótkie
+        opisy model już widzi w listie ``tools``, więc nie dublujemy ich).
+        Z ``tool_name`` zwraca pełny opis i parametry (typy, wymagane pola,
+        opisy parametrów) jednego narzędzia - dokładnie to, czego nie ma w
+        kompaktowej listie ``tools`` wysyłanej z żądaniem.
+
+        Kształt odpowiedzi trzyma konwencję rejestru: ``success``/``error`` są
+        na górnym poziomie, a reszta ląduje w ``result`` (ToolHandle._format_result),
+        dlatego payload nie może być własnym kluczem "result".
+        """
+        if tool_name is not None:
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                return {
+                    "success": False,
+                    "error": "tool_name musi być niepustym tekstem (nazwą narzędzia).",
+                }
+            wanted = tool_name.strip()
+            record = self.describe_tool(wanted)
+            if record is None:
+                known = ", ".join(self.tool_names())
+                return {
+                    "success": False,
+                    "error": (
+                        f"Narzędzie '{wanted}' nie jest zarejestrowane. "
+                        f"Dostępne: {known}."
+                    ),
+                }
+            view = self._tool_view(record)
+            return {
+                "success": True,
+                "tool": _fit_to_char_budget(view, INTROSPECTION_CHAR_BUDGET),
+            }
+        # Przegląd zawiera tylko nazwy: krótkie opisy model już widzi w listie
+        # `tools`, więc powtarzać je w wyniku narzędzia = dublować kontekst.
+        return {
+            "success": True,
+            "count": len(self.tool_names()),
+            "tools": self.tool_names(),
+            "hint": (
+                "list_tools(tool_name=\"<nazwa>\") zwraca pełny opis i parametry "
+                "jednego narzędzia."
+            ),
+        }
 
     def public_tools(self) -> List[Dict[str, Any]]:
         with self._lock:
