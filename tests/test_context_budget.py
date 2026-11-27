@@ -57,6 +57,23 @@ def test_compact_tool_schemas_fit_small_context():
             assert "description" not in schema
 
 
+def test_system_prompt_does_not_duplicate_tool_catalogue():
+    """Katalog opisów jest wyłącznie w schemie tools, nie w promptcie systemowym."""
+    tools = build_tools(workspace_dir=".")
+    tool_prompt = build_tool_prompt(tools, {})
+    system_prompt = build_system_prompt(DEFAULT_SYSTEM_PROMPT, tool_prompt, {})
+
+    for item in tools.get_tools_list():
+        function = item["function"]
+        if function["name"] == "list_tools":
+            continue  # prompt wspomina tylko samo meta-narzędzie po nazwie
+        assert function["description"][:40] not in system_prompt
+    # Stały kontekst (Mermaid + data/hora + list_tools + zasady) musi mieścić się
+    # w oknie 4096 razem ze zwartą schemą narzędzi (<2500 tokenów).
+    assert len(system_prompt) < 3000
+    assert "Aktualna data i hora:" in system_prompt
+
+
 def test_context_budget_keeps_user_message_with_compact_prompt():
     tools = build_tools(workspace_dir=".")
     handler = OllamaHandler(tool_handle=tools)

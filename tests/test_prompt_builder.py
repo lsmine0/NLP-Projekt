@@ -7,14 +7,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from datetime import datetime, timedelta, timezone
+
 from core.ChatStore import SettingsStore
-from core.PromptBuilder import build_system_prompt, build_tool_prompt
+from core.PromptBuilder import (
+    build_system_prompt,
+    build_time_context,
+    build_tool_prompt,
+)
 from handlers.ToolHandle import ToolHandle
+from tools.MetaTools import register_meta_tools
+from tools.ToolBuilder import build_tools
 
 
-def test_tool_prompt_changes_when_a_tool_is_added() -> None:
+def test_tool_prompt_never_lists_registered_tools() -> None:
+    """Katalog narzędzi jest w schemie tools - prompt go nie powtarza."""
     tools = ToolHandle()
     before = build_tool_prompt(tools, {})
+    assert "nie ma żadnego zarejestrowanego narzędzia" in before
 
     tools.create_tool(
         "test_lookup",
@@ -24,10 +34,41 @@ def test_tool_prompt_changes_when_a_tool_is_added() -> None:
     )
     after = build_tool_prompt(tools, {})
 
-    assert "test_lookup" not in before
-    assert "test_lookup: Wyszukuje wpis testowy." in after
-    # Parametry są w schemacie tools; prompt nie duplikuje szczegółów.
-    assert "query: string (wymagany)" not in after
+    # Ani nazwa, ani opis, ani parametry nie migrują już do prompta.
+    assert "test_lookup" not in after
+    assert "Wyszukuje wpis testowy" not in after
+    assert "query" not in after
+    assert after != before  # registry jest niepusty -> inne zdanie wstępne
+
+
+def test_tool_prompt_is_bounded_regardless_of_registry_size() -> None:
+    """Rejestr z jednym i z dwudziestoma toolami daje prompt tej samej długości."""
+    minimal = build_tools(
+        files=False, math=False, web=False, code=False,
+        images=False, interactions=False,
+    )
+    full = build_tools(workspace_dir=".")
+
+    assert len(minimal.get_tools_list()) == 1  # tylko list_tools
+    assert len(full.get_tools_list()) > 20
+    assert build_tool_prompt(minimal, {}) == build_tool_prompt(full, {})
+    prompt = build_tool_prompt(full, {})
+    assert "Finds files in a directory" not in prompt
+    assert "Case-insensitive filename pattern" not in prompt
+    assert len(prompt) < 1200
+
+
+def test_tool_prompt_announces_list_tools_only_when_it_is_registered() -> None:
+    without_meta = ToolHandle()
+    without_meta.create_tool("probe", "Probe tool.")
+    assert "list_tools" not in build_tool_prompt(without_meta, {})
+
+    tools = ToolHandle()
+    register_meta_tools(tools)
+    prompt = build_tool_prompt(tools, {})
+    assert "`list_tools()`" in prompt
+    assert "Dysponujesz narzędziem" in prompt
+    assert "dostępnych narzędzi" in prompt
 
 
 def test_system_prompt_keeps_fixed_tool_section_after_user_prompt() -> None:
@@ -55,6 +96,7 @@ def test_create_agent_passes_composed_prompt_to_agent(monkeypatch) -> None:
     monkeypatch.setattr(adapter, "OllamaAgent", FakeAgent)
     tools = ToolHandle()
     tools.create_tool("sample", "Przykładowe narzędzie.")
+    register_meta_tools(tools)
 
     agent = create_agent(
         {
@@ -67,7 +109,10 @@ def test_create_agent_passes_composed_prompt_to_agent(monkeypatch) -> None:
 
     assert isinstance(agent, FakeAgent)
     assert "Odpowiadaj zwięźle." in captured["system_prompt"]
-    assert "sample: Przykładowe narzędzie." in captured["system_prompt"]
+    # Opis narzędzia nie trafia do prompta - model widzi go w schemie tools.
+    assert "Przykładowe narzędzie" not in captured["system_prompt"]
+    assert "`list_tools()`" in captured["system_prompt"]
+    assert "Aktualna data i hora:" in captured["system_prompt"]
     assert "```mermaid" in captured["system_prompt"]
     assert "Nie zastępuj diagramu kodem aplikacji" in captured["system_prompt"]
     assert "A -->|tekst etykiety| B" in captured["system_prompt"]
@@ -235,8 +280,10 @@ def test_mermaid_repair_uses_tool_free_provider_request() -> None:
     assert "tools" not in captured
 
 
-def test_tool_prompt_contains_current_data_and_answer_rules() -> None:
+def test_tool_prompt_keeps_call_discipline_without_per_tool_hints() -> None:
+    """Zasady odpowiedzi zostają, policyki per tool (search_web/ask_user) - nie."""
     tools = ToolHandle()
+    register_meta_tools(tools)
     tools.create_tool(
         "search_web",
         "Wyszukuje aktualne informacje.",
@@ -246,7 +293,31 @@ def test_tool_prompt_contains_current_data_and_answer_rules() -> None:
         risk=("external",),
     )
     prompt = build_tool_prompt(tools, {})
-    assert "aktualnych cen" in prompt
-    assert "search_web" in prompt
-    assert "Po otrzymaniu wyniku narzędzia zawsze" in prompt
-    assert "Nie kończ tury samym procesem myślenia" in prompt
+
+    assert "mechanizmem tool_calls" in prompt
+    assert "Po wyniku narzędzia zawsze napisz odpowiedź użytkownikowi" in prompt
+    assert "nie kończ tury samym procesem myślenia" in prompt
+    assert "result.denied=true" in prompt
+    # Policyka „użyj search_web przy cenach“ przeniesiona do kontekstu daty.
+    assert "search_web" not in prompt
+    assert "aktualnych cen" not in prompt
+
+
+def test_default_context_injects_current_date_and_time() -> None:
+    fixed = datetime(2026, 3, 14, 9, 15, tzinfo=timezone(timedelta(hours=2)))
+    context = build_time_context(fixed)
+    assert "Aktualna data i hora: 2026-03-14 (sobota), 09:15" in context
+    assert "+02:00" in context
+    assert "UTC: 2026-03-14 07:15" in context
+    assert "„dzisiaj”" in context
+
+    # Bez jawnego `now` prompt dostaje realny, bieżący timestamp.
+    prompt = build_system_prompt("", "", {})
+    assert datetime.now().astimezone().strftime("%Y-%m-%d") in prompt
+
+
+def test_config_now_override_reaches_system_prompt() -> None:
+    fixed = datetime(2030, 1, 1, 0, 0, tzinfo=timezone.utc)
+    prompt = build_system_prompt("", "", {"now": fixed})
+    assert "Aktualna data i hora: 2030-01-01 (wtorek)" in prompt
+    assert datetime.now().astimezone().strftime("%Y-%m-%d") not in prompt

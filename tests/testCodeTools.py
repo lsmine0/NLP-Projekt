@@ -371,12 +371,20 @@ class CodeToolsTests(unittest.TestCase):
         self.assertEqual(bypass_attempt["result"]["stdout"].strip(), "1")
 
     def test_tool_builder_includes_code_tools_by_default(self) -> None:
-        with_code = build_tools(files=False, math=False, web=False, code=True, images=False, interactions=False)
+        # meta=False wyłącza list_tools, aby test obejmował wyłącznie grupy
+        # narzędzi - list_tools jest infrastrukturą rejestru, nie osobną grupą.
+        with_code = build_tools(
+            files=False, math=False, web=False, code=True,
+            images=False, interactions=False, meta=False,
+        )
         self.assertEqual(
             [t["function"]["name"] for t in with_code.get_tools_list()],
             ["edit_file", "run_python"],
         )
-        without_code = build_tools(files=False, math=False, web=False, code=False, images=False, interactions=False)
+        without_code = build_tools(
+            files=False, math=False, web=False, code=False,
+            images=False, interactions=False, meta=False,
+        )
         self.assertEqual(without_code.get_tools_list(), [])
 
     def test_edit_file_validates_json_syntax_and_edits_other_languages(self) -> None:

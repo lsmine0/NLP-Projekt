@@ -84,9 +84,20 @@ def test_web_tools():
 
 
 def test_builder_and_shared_registry():
-    assert (build_tools(files=False, math=False, web=False, code=False,
-                        images=False, interactions=False).get_tools_list() == [])
-    assert len(build_tools().get_tools_list()) == 21
+    # Rejestr bez grup narzędzi: zostaje tylko meta-narzędzie list_tools.
+    introspection_only = build_tools(
+        files=False, math=False, web=False, code=False,
+        images=False, interactions=False,
+    )
+    assert [t["function"]["name"] for t in introspection_only.get_tools_list()] == [
+        "list_tools"
+    ]
+    assert build_tools(
+        files=False, math=False, web=False, code=False,
+        images=False, interactions=False, meta=False,
+    ).get_tools_list() == []
+    # 18 bazowych + 2 obrazowe (#51) + ask_user + list_tools (introspekcja).
+    assert len(build_tools().get_tools_list()) == 22
     tools = build_tools(files=False, web=False)
     flow = AgentFlow(tool_handle=tools)
     assert flow.ollama.ToolsHandle is flow.tools is tools

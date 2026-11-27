@@ -71,8 +71,9 @@ def test_build_config_file_and_inline_updates(
 def test_main_build_tools_registers_all_tools() -> None:
     tools = app_main.build_tools()
     assert isinstance(tools, ToolHandle)
-    # 18 tools bazowych + 2 obrazowe (#51) + ask_user.
-    assert len(tools.get_tools_list()) == 21
+    # 18 tools bazowych + 2 obrazowe (#51) + ask_user + list_tools (#introspekcja).
+    assert len(tools.get_tools_list()) == 22
+    assert "list_tools" in {t["function"]["name"] for t in tools.get_tools_list()}
 
 
 def test_build_provider_startup_errors(monkeypatch: pytest.MonkeyPatch) -> None:
